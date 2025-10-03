@@ -183,6 +183,7 @@ def define_platform(conf):
 	conf.env.TOGLES = conf.options.TOGLES
 	conf.env.GL = conf.options.GL and not conf.options.TESTS and not conf.options.DEDICATED
 	conf.env.OPUS = conf.options.OPUS
+	conf.env.BINK = conf.options.BINK
 
 	arch32 = conf.run_test(CPP_32BIT_CHECK, 'Testing 32bit support')
 	arch64 = conf.run_test(CPP_64BIT_CHECK, 'Testing 64bit support')
@@ -201,8 +202,10 @@ def define_platform(conf):
 		conf.env.append_unique('DEFINES', [
 			'DX_TO_GL_ABSTRACTION',
 			'GL_GLEXT_PROTOTYPES',
-			'BINK_VIDEO'
 		])
+
+	if conf.env.BINK:
+		conf.env.append_unique( 'DEFINES', [ 'BINK_VIDEO' ] )
 
 	if conf.options.TOGLES:
 		conf.env.append_unique('DEFINES', ['TOGLES'])
@@ -323,6 +326,12 @@ def options(opt):
 	grp.add_option('--sanitize', action = 'store', dest = 'SANITIZE', default = '',
 		help = 'build with sanitizers [default: %default]')
 
+	grp.add_option('--custom-march', action = 'store', dest = 'FLAGS', default = '',
+		help = 'build using custom march flag')
+
+	grp.add_option('--enable-bink', action = 'store_true', dest = 'BINK', default='',
+		help = 'build with bink support')
+
 	opt.load('compiler_optimizations subproject')
 
 	opt.load('xcompile compiler_cxx compiler_c sdl2 clang_compilation_database strip_on_install_v2 waf_unit_test subproject')
@@ -402,6 +411,12 @@ def check_deps(conf):
 				conf.check_cfg(package='libcurl', uselib_store='CURL', args=['--cflags', '--libs'])
 			conf.check_cfg(package='zlib', uselib_store='ZLIB', args=['--cflags', '--libs'])
 
+			if conf.options.BINK:
+				conf.check_cfg(package='libavcodec', uselib_store='AVCODEC', args=['--cflags', '--libs'])
+				conf.check_cfg(package='libavutil', uselib_store='AVUTIL', args=['--cflags', '--libs'])
+				conf.check_cfg(package='libavformat', uselib_store='AVFORMAT', args=['--cflags', '--libs'])
+				conf.check_cfg(package='libswscale', uselib_store='SWSCALE', args=['--cflags', '--libs'])
+
 			if conf.options.OPUS:
 				conf.check_cfg(package='opus', uselib_store='OPUS', args=['--cflags', '--libs'])
 	else:
@@ -417,6 +432,13 @@ def check_deps(conf):
 			conf.check(lib='ssl', uselib_store='SSL')
 		conf.check(lib='android_support', uselib_store='ANDROID_SUPPORT')
 		conf.check(lib='opus', uselib_store='OPUS')
+
+		if conf.options.BINK:
+			conf.check(lib='avcodec', uselib_store='AVCODEC')
+			conf.check(lib='avutil', uselib_store='AVUTIL')
+			conf.check(lib='avformat', uselib_store='AVFORMAT')
+			conf.check(lib='swscale', uselib_store='SWSCALE')
+
 
 	if conf.env.DEST_OS == 'win32':
 		conf.check(lib='libz', uselib_store='ZLIB', define_name='USE_ZLIB')
@@ -471,6 +493,9 @@ def configure(conf):
 	if conf.options.OPUS or conf.env.DEST_OS == 'android':
 		projects['game'] += ['engine/voice_codecs/opus']
 
+	if conf.options.BINK:
+		projects['game'] += ['video/video_bink']
+
 	if conf.options.DISABLE_WARNS:
 		compiler_optional_flags = ['-w']
 	else:
@@ -496,7 +521,6 @@ def configure(conf):
 
 	cflags, linkflags = conf.get_optimization_flags()
 
-
 	flags = []
 
 	if conf.options.SANITIZE:
@@ -514,13 +538,17 @@ def configure(conf):
 			'-I'+os.path.abspath('.')+'/thirdparty/openal-soft/include/',
 			'-I'+os.path.abspath('.')+'/thirdparty/fontconfig',
 			'-I'+os.path.abspath('.')+'/thirdparty/freetype/include',
+			'-I'+os.path.abspath('.')+'/thirdparty/ffmpeg/',
 			'-llog',
 			'-lz'
 		]
 
 		flags += ['-funwind-tables', '-g']
 	elif conf.env.COMPILER_CC != 'msvc' and conf.env.DEST_OS != 'darwin' and conf.env.DEST_CPU in ['x86', 'x86_64']:
-		flags += ['-march=core2']
+		if conf.options.FLAGS:
+			flags += ['-march=%s'%conf.options.FLAGS]
+		else:
+			flags += ['-march=core2']
 
 	if conf.env.DEST_CPU in ['x86', 'x86_64']:
 		flags += ['-mfpmath=sse']
@@ -633,12 +661,27 @@ def build(bld):
 		sdl_path = os.path.join('lib', bld.env.DEST_OS, bld.env.DEST_CPU, sdl_name)
 		bld.install_files(bld.env.LIBDIR, [sdl_path])
 
+	if bld.env.DEST_OS == 'android' and bld.env.BINK:
+		ffmpeg_libs = [
+			'libavcodec.so',
+			'libavformat.so',
+			'libavutil.so',
+			'libswscale.so',
+		]
+
+		for lib_name in ffmpeg_libs:
+			lib_path = os.path.join('lib', 'android', bld.env.DEST_CPU, lib_name)
+			bld.install_files(bld.env.LIBDIR, [lib_path])
+
 	if bld.env.DEST_OS == 'win32':
 		projects['game'] += ['utils/bzip2']
 		projects['dedicated'] += ['utils/bzip2']
 
 	if bld.env.OPUS or bld.env.DEST_OS == 'android':
 		projects['game'] += ['engine/voice_codecs/opus']
+
+	if bld.env.BINK:
+		projects['game'] += ['video/video_bink']
 
 	if bld.env.TESTS:
 		bld.add_subproject(projects['tests'])
