@@ -57,6 +57,7 @@ projects={
 		'game/client',
 		'game/server',
 		'gameui',
+		'game/gamepadui',
 		'inputsystem',
 		'ivp/havana',
 		'ivp/havana/havok/hk_base',
