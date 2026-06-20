@@ -237,6 +237,10 @@ public:
         switch ( buttonCode )
         {
         case KEY_ENTER:
+        case KEY_XBUTTON_A:
+#ifdef HL2_RETAIL
+        case STEAMCONTROLLER_A:
+#endif
             if ( !s_bBeingBound )
                 StartCapture();
             break;
