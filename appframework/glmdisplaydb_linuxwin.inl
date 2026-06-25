@@ -44,6 +44,12 @@ void GLMRendererInfo::Init( GLMRendererInfoFields *info )
         m_info.m_hasGammaWrites = true;
 	m_info.m_cantAttachSRGB = false;
 
+	// Framebuffer fetch: GL_ARM_shader_framebuffer_fetch (Mali) or
+	// GL_EXT_shader_framebuffer_fetch (PowerVR/Adreno).  Lets the fragment
+	// shader read the current pixel's framebuffer color directly from the
+	// on-chip tile buffer — no FBO resolve needed for post-processing blends.
+	m_info.m_hasFramebufferFetch = gGL->m_bHave_GL_ARM_shader_framebuffer_fetch || gGL->m_bHave_GL_EXT_shader_framebuffer_fetch;
+
         // If you haven't created a GL context by now (and initialized gGL), you're about to crash.
 
         m_info.m_hasMixedAttachmentSizes = gGL->m_bHave_GL_EXT_framebuffer_object;

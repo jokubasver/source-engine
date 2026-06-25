@@ -85,6 +85,13 @@ GL_FUNC(OpenGL,true,GLint,glGetUniformLocation,(GLuint a,const GLchar *b),(a,b))
 GL_FUNC(OpenGL,true,GLboolean,glIsEnabled,(GLenum a),(a))
 GL_FUNC(OpenGL,true,GLboolean,glIsTexture,(GLuint a),(a))
 GL_FUNC_VOID(OpenGL,true,glLinkProgram,(GLuint a),(a))
+// Program binary cache (core in GLES 3.0 / GL 4.1). Declared under a dedicated
+// capability flag (not "OpenGL") so that if the entry point is missing on some
+// context, only this flag is cleared instead of clobbering m_bHave_OpenGL.
+// Gated on a non-NULL pointer at the call site.
+GL_EXT( GL_ARB_get_program_binary, 3, 0 )
+GL_FUNC_VOID( GL_ARB_get_program_binary, false, glGetProgramBinary, (GLuint a,GLsizei b,GLsizei *c,GLenum *d,GLvoid *e),(a,b,c,d,e))
+GL_FUNC_VOID( GL_ARB_get_program_binary, false, glProgramBinary, (GLuint a,GLenum b,const GLvoid *c,GLsizei d),(a,b,c,d))
 //GL_FUNC_VOID(OpenGL,true,glOrtho,(GLdouble a,GLdouble b,GLdouble c,GLdouble d,GLdouble e,GLdouble f),(a,b,c,d,e,f))
 GL_FUNC_VOID(OpenGL,true,glPixelStorei,(GLenum a,GLint b),(a,b))
 //GL_FUNC_VOID(OpenGL,true,glPolygonMode,(GLenum a,GLenum b),(a,b))
@@ -228,6 +235,16 @@ GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
 GL_FUNC_VOID( GL_EXT_buffer_storage, false, glBufferStorageEXT, (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags), (target, size, data, flags) )
+
+// GL_ARM_shader_framebuffer_fetch / GL_EXT_shader_framebuffer_fetch
+// On Mali TBDR, allows reading the current pixel's framebuffer color directly
+// from the on-chip tile buffer via gl_LastFragColorARM (ARM) or
+// gl_LastFragDataARM (EXT MRT).  Eliminates FBO resolve+re-render for
+// post-processing passes (bloom, tonemap, color correction, blend).
+// No entry points needed — it's a shader-language extension, detected
+// purely from the extension string.
+GL_EXT( GL_ARM_shader_framebuffer_fetch, -1, -1 )
+GL_EXT( GL_EXT_shader_framebuffer_fetch, -1, -1 )
 //GL_FUNC_VOID(OpenGL, false,glGetTexImage,(GLenum a,GLint b,GLenum c,GLenum d,GLvoid *e),(a,b,c,d,e))
 
 

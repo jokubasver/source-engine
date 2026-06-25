@@ -68,7 +68,12 @@ CFLAGS = {
 	'release': {
 		'msvc':    ['/O2', '/MT'],
 		'owcc':    ['-O3', '-fomit-leaf-frame-pointer', '-fomit-frame-pointer', '-finline-functions', '-finline-limit=512'],
-		'default': ['-O2', '-funsafe-math-optimizations', '-ftree-vectorize', '-ffast-math']
+		# RK3326/Cortex-A35 specific: -O3 with FMA, auto-vectorization, and fast math
+		# -ftree-vectorize enables auto-SIMD for loops (critical for Mali-G31 throughput)
+		# -ffast-math enables FMA fusion and relaxed FP contraction (critical for GLES shader perf)
+		# -funsafe-math-optimizations allows reciprocal/rsqrt approximations (vrsqrte on Cortex-A35)
+		# -fomit-frame-pointer frees one more GPR for general use on tight AArch64 code
+		'default': ['-O3', '-funsafe-math-optimizations', '-ftree-vectorize', '-ffast-math', '-fomit-frame-pointer']
 	},
 	'debug': {
 		'msvc':    ['/Od', '/MTd'],

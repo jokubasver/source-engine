@@ -1160,33 +1160,42 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 				case GL_TEXTURE_CUBE_MAP:
 					// adjust target to steer to the proper face, then fall through to the 2D texture path.
 					target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + desc->m_req.m_face;
-				case GL_TEXTURE_2D:
-				case GL_TEXTURE_3D:
+			case GL_TEXTURE_2D:
+			case GL_TEXTURE_3D:
+			{
+				// uncompressed path
+				// http://www.opengl.org/sdk/docs/man/xhtml/glGetTexImage.xml
+				// GLES lacks glGetTexImage, so we attach the texture to a temporary
+				// FBO and glReadPixels from it.  Reuse a per-context FBO instead of
+				// gen/delete on every readback: glReadPixels already forces a full
+				// tile flush on Mali TBDR, and the extra glGenFramebuffers /
+				// glDeleteFramebuffers / glFramebufferTexture2D validation churn
+				// per call is pure overhead.
+				GLint Rfbo = 0, Dfbo = 0;
+
+				gGL->glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &Dfbo );
+				gGL->glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &Rfbo );
+
+				if ( !m_ctx->m_nReadTexelsFBO )
 				{
-					// uncompressed path
-					// http://www.opengl.org/sdk/docs/man/xhtml/glGetTexImage.xml
-					GLuint fbo;
-					GLint Rfbo = 0, Dfbo = 0;
-
-					gGL->glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &Dfbo );
-					gGL->glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &Rfbo );
-
-					gGL->glGenFramebuffers(1, &fbo);
-					gGL->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-					gGL->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, m_ctx->m_samplers[0].m_pBoundTex->m_texName, 0);
-
-					GLenum fmt = format->m_glDataFormat;
-					GLenum dataType = format->m_glDataType;
-
-					convert_texture(fmt, 0, 0, fmt, dataType, NULL);
-					gGL->glReadPixels(0, 0, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, fmt, dataType, data);
-
-					gGL->glBindFramebuffer(GL_READ_FRAMEBUFFER, Rfbo);
-					gGL->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dfbo);
-
-					gGL->glDeleteFramebuffers(1, &fbo);
-					break;
+					gGL->glGenFramebuffers( 1, &m_ctx->m_nReadTexelsFBO );
 				}
+				GLuint fbo = m_ctx->m_nReadTexelsFBO;
+
+				gGL->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+				gGL->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, m_ctx->m_samplers[0].m_pBoundTex->m_texName, 0);
+
+				GLenum fmt = format->m_glDataFormat;
+				GLenum dataType = format->m_glDataType;
+
+				convert_texture(fmt, 0, 0, fmt, dataType, NULL);
+				gGL->glReadPixels(0, 0, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, fmt, dataType, data);
+
+				gGL->glBindFramebuffer(GL_READ_FRAMEBUFFER, Rfbo);
+				gGL->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dfbo);
+
+				break;
+			}
 			}
 		}
 		else

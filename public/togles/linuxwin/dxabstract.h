@@ -1053,8 +1053,7 @@ FORCEINLINE HRESULT TOGLMETHODCALLTYPE IDirect3DDevice9::SetRenderStateInline( D
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.sfail = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 		case D3DRS_STENCILZFAIL:			// GLStencilOp_t		"what do you do if stencil test passes *but* depth test fails, if depth test happened"
@@ -1062,8 +1061,7 @@ FORCEINLINE HRESULT TOGLMETHODCALLTYPE IDirect3DDevice9::SetRenderStateInline( D
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.dpfail = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 		case D3DRS_STENCILPASS:			// GLStencilOp_t		"what do you do if stencil test and depth test both pass"
@@ -1071,8 +1069,7 @@ FORCEINLINE HRESULT TOGLMETHODCALLTYPE IDirect3DDevice9::SetRenderStateInline( D
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.dppass = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 		case D3DRS_STENCILFUNC:			// GLStencilFunc_t

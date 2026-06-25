@@ -164,6 +164,7 @@ public:
 	DEFCONFIGMETHOD( bool, CanDoSRGBReadFromRTs(), true );
 
 	virtual bool SupportsGLMixedSizeTargets() const = 0;
+	virtual bool HasFramebufferFetch() const = 0;
 
 	virtual bool IsAAEnabled() const = 0;	// Is antialiasing being used?
 

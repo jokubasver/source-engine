@@ -951,16 +951,21 @@ template<typename T> class GLState
 		
 		FORCEINLINE void Flush()
 		{
-			// immediately blast out the state - it makes no sense to delta it or do anything fancy because shaderapi, dxabstract, and OpenGL itself does this for us (and OpenGL calls with multithreaded drivers are very cheap)
 			GLContextSet( &data );
 		}
-				
+
 		// write: client src into cache
-		// common case is both false.  dirty is calculated, context write is deferred.
+		// Delta-checked: skip the GL call when the cached value already matches.
+		// (The old "blast it out, GL calls are cheap on threaded desktop drivers"
+		// assumption does not hold on single-threaded mobile Mali drivers, where
+		// every redundant glEnable/glDepthFunc/glBlendFunc is real driver overhead.)
 		FORCEINLINE void Write( const T *src )
 		{
-			data = *src;
-			Flush();
+			if ( !( data == *src ) )
+			{
+				data = *src;
+				Flush();
+			}
 		}
 						
 		// default: write default value to cache, optionally write through
@@ -1009,17 +1014,23 @@ template<typename T, int COUNT> class GLStateArray
 		// write cache->context if dirty or forced.
 		FORCEINLINE void FlushIndex( int index )
 		{
-			// immediately blast out the state - it makes no sense to delta it or do anything fancy because shaderapi, dxabstract, and OpenGL itself does this for us (and OpenGL calls with multithreaded drivers are very cheap)
 			GLContextSetIndexed( &data[index], index );
 		};
 
 		// write: client src into cache
-		// common case is both false.  dirty is calculated, context write is deferred.
+		// Delta-checked: skip the indexed GL call when the cached slot already matches.
 		FORCEINLINE void WriteIndex( T *src, int index )
 		{
-			data[index] = *src;
-			FlushIndex( index );	// dirty becomes false
+			if ( !( data[index] == *src ) )
+			{
+				data[index] = *src;
+				FlushIndex( index );
+			}
 		};
+
+		// direct cache access (no GL call) - used by combined front+back writers
+		FORCEINLINE const T &GetDataIndex( int index ) const { return data[index]; }
+		FORCEINLINE void SetDataIndex( const T *src, int index ) { data[index] = *src; }
 						
 		// write all slots in the array
 		FORCEINLINE void Flush()
@@ -1432,6 +1443,18 @@ class GLMContext
 		FORCEINLINE void	WriteStencilTestEnable( GLStencilTestEnable_t *src ) { m_StencilTestEnable.Write( src ); }
 		FORCEINLINE void	WriteStencilFunc( GLStencilFunc_t *src ) { m_StencilFunc.Write( src ); }
 		FORCEINLINE void	WriteStencilOp( GLStencilOp_t *src, int which ) { m_StencilOp.WriteIndex( src, which ); }
+		// D3D9 has no separate front/back stencil ops, so the D3D layer always sets
+		// both faces identically. Emit a single glStencilOpSeparate(GL_FRONT_AND_BACK)
+		// instead of two per-face calls, and keep both cache slots consistent.
+		FORCEINLINE void	WriteStencilOpBoth( GLStencilOp_t *src )
+		{
+			if ( !( m_StencilOp.GetDataIndex(0) == *src ) || !( m_StencilOp.GetDataIndex(1) == *src ) )
+			{
+				gGL->glStencilOpSeparate( GL_FRONT_AND_BACK, src->sfail, src->dpfail, src->dppass );
+			}
+			m_StencilOp.SetDataIndex( src, 0 );
+			m_StencilOp.SetDataIndex( src, 1 );
+		}
 		FORCEINLINE void	WriteStencilWriteMask( GLStencilWriteMask_t *src ) { m_StencilWriteMask.Write( src ); }
 		FORCEINLINE void	WriteClearColor( GLClearColor_t *src ) { m_ClearColor.Write( src ); }
 		FORCEINLINE void	WriteClearDepth( GLClearDepth_t *src ) { m_ClearDepth.Write( src ); }
@@ -1676,6 +1699,7 @@ class GLMContext
 		CGLMFBO							*m_boundDrawFBO;		// FBO on GL_DRAW_FRAMEBUFFER bind point
 		CGLMFBO							*m_boundReadFBO;		// FBO on GL_READ_FRAMEBUFFER bind point
 																// ^ both are set if you bind to GL_FRAMEBUFFER_EXT
+		GLuint							m_nReadTexelsFBO;		// cached FBO for ReadTexels glReadPixels path (avoids gen/delete per readback)
 		
 		CGLMFBO							*m_drawingFBO;			// what FBO should be bound at draw time (to both read/draw bp's).
 
@@ -1962,14 +1986,21 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 
 FORCEINLINE void GLMContext::SetVertexProgram( CGLMProgram *pProg )
 {
-	m_drawingProgram[kGLMVertexProgram] = pProg;
-	m_bDirtyPrograms = true;
+	if ( m_drawingProgram[kGLMVertexProgram] != pProg )
+	{
+		m_drawingProgram[kGLMVertexProgram] = pProg;
+		m_bDirtyPrograms = true;
+	}
 }
 
 FORCEINLINE void GLMContext::SetFragmentProgram( CGLMProgram *pProg )
 {
-	m_drawingProgram[kGLMFragmentProgram] = pProg ? pProg : m_pNullFragmentProgram;
-	m_bDirtyPrograms = true;
+	CGLMProgram *pResolved = pProg ? pProg : m_pNullFragmentProgram;
+	if ( m_drawingProgram[kGLMFragmentProgram] != pResolved )
+	{
+		m_drawingProgram[kGLMFragmentProgram] = pResolved;
+		m_bDirtyPrograms = true;
+	}
 }
 
 // "slot" means a vec4-sized thing
@@ -1994,7 +2025,22 @@ FORCEINLINE void GLMContext::SetProgramParametersF( EGLMProgramType type, uint b
 	}
 #endif
 
-	memcpy( &m_programParamsF[type].m_values[baseSlot][0], slotData, (4 * sizeof(float)) * slotCount );
+	// Value-compare: Source re-sets the same projection/view/lighting/material
+	// constants on most draw calls.  On a CPU-bound dual-core A35, skipping the
+	// memcpy AND the dirty-mark raise (which would force a glUniform4fv upload of
+	// the full firstDirty..highWater range at flush time) when the data is
+	// unchanged is the single biggest per-draw-call CPU saving available.
+	// The memcmp cost (a few cycles per vec4) is negligible vs. the avoided
+	// memcpy + GL upload.  If the program changed since last flush, its dirty
+	// range was already reset to [0, highWater] in FlushDrawStates, so the first
+	// draw after a program change still uploads everything correctly.
+	const uint nBytes = (4 * sizeof(float)) * slotCount;
+	if ( memcmp( &m_programParamsF[type].m_values[baseSlot][0], slotData, nBytes ) == 0 )
+	{
+		return;
+	}
+
+	memcpy( &m_programParamsF[type].m_values[baseSlot][0], slotData, nBytes );
 
 	if ( ( type == kGLMVertexProgram ) && ( m_bUseBoneUniformBuffers ) )
 	{
@@ -2125,24 +2171,30 @@ FORCEINLINE void GLMContext::SetSamplerDirty( int sampler )
 FORCEINLINE void GLMContext::SetSamplerTex( int sampler, CGLMTex *tex ) 
 { 
 	Assert( sampler < GLM_SAMPLER_COUNT );
-	m_samplers[sampler].m_pBoundTex = tex;
-	if ( tex )
+	// Delta-check: skip the glBindTexture when this TMU already holds this texture.
+	// Source re-sets the same texture to the same sampler constantly; on Mali each
+	// redundant glBindTexture is real driver descriptor-table overhead.
+	if ( m_samplers[sampler].m_pBoundTex != tex )
 	{
-			if ( !gGL->m_bHave_GL_EXT_direct_state_access )
-			{
-				if ( sampler != m_activeTexture )
+		m_samplers[sampler].m_pBoundTex = tex;
+		if ( tex )
+		{
+				if ( !gGL->m_bHave_GL_EXT_direct_state_access )
 				{
-					gGL->glActiveTexture( GL_TEXTURE0 + sampler );
-					m_activeTexture = sampler;
-				}
+					if ( sampler != m_activeTexture )
+					{
+						gGL->glActiveTexture( GL_TEXTURE0 + sampler );
+						m_activeTexture = sampler;
+					}
 
-				gGL->glBindTexture( tex->m_texGLTarget, tex->m_texName );
-			}
-			else
-			{
-				gGL->glBindMultiTextureEXT( GL_TEXTURE0 + sampler, tex->m_texGLTarget, tex->m_texName );
-			}
+					gGL->glBindTexture( tex->m_texGLTarget, tex->m_texName );
+				}
+				else
+				{
+					gGL->glBindMultiTextureEXT( GL_TEXTURE0 + sampler, tex->m_texGLTarget, tex->m_texName );
+				}
 		}
+	}
 	
 	if ( !m_bUseSamplerObjects )
 	{

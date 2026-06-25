@@ -91,6 +91,7 @@ static IDirect3DDevice9 *g_pD3D_Device;
 #endif // GL_BATCH_PERF_ANALYSIS
 
 ConVar gl_batch_vis( "gl_batch_vis", "0" );
+ConVar gl_framebuffer_fetch( "gl_framebuffer_fetch", "1", FCVAR_NONE, "Use GL_ARM_shader_framebuffer_fetch to read FB color from tile buffer (Mali TBDR)" );
 
 // ------------------------------------------------------------------------------------------------------------------------------ //
 // functions that are dependant on g_pLauncherMgr
@@ -1203,10 +1204,16 @@ static void FillD3DCaps9( const GLMRendererInfoFields &glmRendererInfo, D3DCAPS9
 	pCaps->MaxPixelShader30InstructionSlots		=	0;
 
 #if DX_TO_GL_ABSTRACTION
-	pCaps->FakeSRGBWrite			=	true;//!glmRendererInfo.m_hasGammaWrites;
-	pCaps->CanDoSRGBReadFromRTs		=	true;//!glmRendererInfo.m_cantAttachSRGB;
+	// FakeSRGBWrite controls whether we use shader-based log/exp sRGB emulation.
+	// Should be FALSE on hardware with real GL_FRAMEBUFFER_SRGB support.
+	// Mali-G31 has GL_EXT_sRGB_write_control and GL_FRAMEBUFFER_SRGB, so use real hardware path.
+	// When TRUE: every pixel shader has log/exp injected → slow, inaccurate, double-dark on Mali.
+	// When FALSE: hardware handles sRGB conversion natively → accurate, free, correct brightness.
+	pCaps->FakeSRGBWrite			=	!glmRendererInfo.m_hasGammaWrites;
+	pCaps->CanDoSRGBReadFromRTs		=	!glmRendererInfo.m_cantAttachSRGB;
 	pCaps->MixedSizeTargets			=	glmRendererInfo.m_hasMixedAttachmentSizes;
 	pCaps->SupportInt16Format = gGL->m_bHave_GL_EXT_texture_norm16;
+	pCaps->HasFramebufferFetch		=	glmRendererInfo.m_hasFramebufferFetch;
 #endif
 }
 
@@ -6141,8 +6148,7 @@ HRESULT IDirect3DDevice9::SetRenderState( D3DRENDERSTATETYPE State, DWORD Value 
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.sfail = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 
@@ -6151,8 +6157,7 @@ HRESULT IDirect3DDevice9::SetRenderState( D3DRENDERSTATETYPE State, DWORD Value 
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.dpfail = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 
@@ -6161,8 +6166,7 @@ HRESULT IDirect3DDevice9::SetRenderState( D3DRENDERSTATETYPE State, DWORD Value 
 			GLenum stencilop = D3DStencilOpToGL( Value );
 			gl.m_StencilOp.dppass = stencilop;
 
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,0 );
-			m_ctx->WriteStencilOp( &gl.m_StencilOp,1 );		// ********* need to recheck this
+			m_ctx->WriteStencilOpBoth( &gl.m_StencilOp );
 			break;
 		}
 
