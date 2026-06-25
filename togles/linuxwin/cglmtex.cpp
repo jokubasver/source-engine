@@ -32,6 +32,10 @@ extern "C" {
 #include "decompress.h"
 }
 
+#if defined(__aarch64__) || defined(__arm__)
+#include <arm_neon.h>
+#endif
+
 #include "tier0/icommandline.h"
 #include "glmtexinlines.h"
 
@@ -1163,33 +1167,42 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 				case GL_TEXTURE_CUBE_MAP:
 					// adjust target to steer to the proper face, then fall through to the 2D texture path.
 					target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + desc->m_req.m_face;
-				case GL_TEXTURE_2D:
-				case GL_TEXTURE_3D:
+			case GL_TEXTURE_2D:
+			case GL_TEXTURE_3D:
+			{
+				// uncompressed path
+				// http://www.opengl.org/sdk/docs/man/xhtml/glGetTexImage.xml
+				// GLES lacks glGetTexImage, so we attach the texture to a temporary
+				// FBO and glReadPixels from it.  Reuse a per-context FBO instead of
+				// gen/delete on every readback: glReadPixels already forces a full
+				// tile flush on Mali TBDR, and the extra glGenFramebuffers /
+				// glDeleteFramebuffers / glFramebufferTexture2D validation churn
+				// per call is pure overhead.
+				GLint Rfbo = 0, Dfbo = 0;
+
+				gGL->glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &Dfbo );
+				gGL->glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &Rfbo );
+
+				if ( !m_ctx->m_nReadTexelsFBO )
 				{
-					// uncompressed path
-					// http://www.opengl.org/sdk/docs/man/xhtml/glGetTexImage.xml
-					GLuint fbo;
-					GLint Rfbo = 0, Dfbo = 0;
-
-					gGL->glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &Dfbo );
-					gGL->glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &Rfbo );
-
-					gGL->glGenFramebuffers(1, &fbo);
-					gGL->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-					gGL->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, m_ctx->m_samplers[0].m_pBoundTex->m_texName, 0);
-
-					GLenum fmt = format->m_glDataFormat;
-					GLenum dataType = format->m_glDataType;
-
-					convert_texture(fmt, 0, 0, fmt, dataType, NULL);
-					gGL->glReadPixels(0, 0, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, fmt, dataType, data);
-
-					gGL->glBindFramebuffer(GL_READ_FRAMEBUFFER, Rfbo);
-					gGL->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dfbo);
-
-					gGL->glDeleteFramebuffers(1, &fbo);
-					break;
+					gGL->glGenFramebuffers( 1, &m_ctx->m_nReadTexelsFBO );
 				}
+				GLuint fbo = m_ctx->m_nReadTexelsFBO;
+
+				gGL->glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+				gGL->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, m_ctx->m_samplers[0].m_pBoundTex->m_texName, 0);
+
+				GLenum fmt = format->m_glDataFormat;
+				GLenum dataType = format->m_glDataType;
+
+				convert_texture(fmt, 0, 0, fmt, dataType, NULL);
+				gGL->glReadPixels(0, 0, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, fmt, dataType, data);
+
+				gGL->glBindFramebuffer(GL_READ_FRAMEBUFFER, Rfbo);
+				gGL->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dfbo);
+
+				break;
+			}
 			}
 		}
 		else
@@ -3406,57 +3419,254 @@ static GLboolean isDXTcAlpha(GLenum format) {
 }
 
 GLvoid *uncompressDXTc(GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, int transparent0, int* simpleAlpha, int* complexAlpha, const GLvoid *data) {
-    // uncompress a DXTc image
-    // get pixel size of uncompressed image => fixed RGBA
-    int pixelsize = 4;
-    if (format == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || format == GL_COMPRESSED_SRGB_S3TC_DXT1_EXT)
-        pixelsize = 3;
-    // check with the size of the input data stream if the stream is in fact uncompressed
-    if (imageSize == width*height*pixelsize || data==NULL) {
-        // uncompressed stream
-        return (GLvoid*)data;
-    }
-    // alloc memory
-    GLvoid *pixels = malloc(((width+3)&~3)*((height+3)&~3)*pixelsize);
-    // uncompress loop
-    int blocksize;
-    switch (format) {
-        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
-        case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT:
-        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:
-            blocksize = 8;
-            break;
-        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:
-        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:
-            blocksize = 16;
-            break;
-    }
-    uintptr_t src = (uintptr_t) data;
-    for (int y=0; y<height; y+=4) {
-        for (int x=0; x<width; x+=4) {
-            switch(format) {
-                case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
-                case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-                case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT:
-                case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT:
-                    DecompressBlockDXT1(x, y, width, (uint8_t*)src, transparent0, simpleAlpha, complexAlpha, (uint32_t*)pixels);
-                    break;
-                case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-                case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT:
-                    DecompressBlockDXT3(x, y, width, (uint8_t*)src, transparent0, simpleAlpha, complexAlpha, (uint32_t*)pixels);
-                    break;
-                case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-                case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT:
-                    DecompressBlockDXT5(x, y, width, (uint8_t*)src, transparent0, simpleAlpha, complexAlpha, (uint32_t*)pixels);
-                    break;
-            }
-            src+=blocksize;
-        }
-    }
-    return pixels;
+	// uncompress a DXTc image
+	// get pixel size of uncompressed image => fixed RGBA
+	int pixelsize = 4;
+	int isDXT1RGB = (format == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || format == GL_COMPRESSED_SRGB_S3TC_DXT1_EXT);
+	if (isDXT1RGB)
+		pixelsize = 3;
+	// check with the size of the input data stream if the stream is in fact uncompressed
+	if (imageSize == width*height*pixelsize || data==NULL) {
+		// uncompressed stream
+		return (GLvoid*)data;
+	}
+	// alloc memory
+	GLvoid *pixels = malloc(((width+3)&~3)*((height+3)&~3)*pixelsize);
+
+	// simpleAlpha/complexAlpha are not consumed by the only caller (CompressedTexImage2D
+	// derives hasAlpha from the internalformat, not these).  Leave them untouched.
+
+	int isDXT3  = (format == GL_COMPRESSED_RGBA_S3TC_DXT3_EXT       || format == GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT);
+	int isDXT5  = (format == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT       || format == GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT);
+	int isDXT1a = (format == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT       || format == GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT);
+	int blocksize = (isDXT3 || isDXT5) ? 16 : 8;
+
+	int blocksX = (width + 3) >> 2;
+	int blocksY = (height + 3) >> 2;
+	const uint8_t *src = (const uint8_t*)data;
+
+	// Fast path: precompute the 4-entry color palette once per block, then do a
+	// table lookup per pixel.  The reference decoder re-evaluated a per-pixel
+	// switch and recomputed the 565->888 expansion for every pixel; on the
+	// 2-core A35 paired with Mali G31 that scalar churn dominates DXT texture
+	// load/streaming time.  This produces byte-identical output.
+	for (int by = 0; by < blocksY; ++by)
+	{
+		for (int bx = 0; bx < blocksX; ++bx)
+		{
+			// DXT3/DXT5 have an 8-byte alpha block before the 8-byte color block.
+			const uint8_t *colorBlock = (isDXT3 || isDXT5) ? src + 8 : src;
+			uint16_t color0 = *(const uint16_t*)(colorBlock);
+			uint16_t color1 = *(const uint16_t*)(colorBlock + 2);
+			uint32_t code   = *(const uint32_t*)(colorBlock + 4);
+
+			uint8_t r0, g0, b0, r1, g1, b1;
+			{
+				uint32_t t;
+				t = (color0 >> 11) * 255 + 16;            r0 = (uint8_t)((t/32 + t)/32);
+				t = ((color0 & 0x07E0) >> 5) * 255 + 32;  g0 = (uint8_t)((t/64 + t)/64);
+				t = (color0 & 0x001F) * 255 + 16;         b0 = (uint8_t)((t/32 + t)/32);
+				t = (color1 >> 11) * 255 + 16;            r1 = (uint8_t)((t/32 + t)/32);
+				t = ((color1 & 0x07E0) >> 5) * 255 + 32;  g1 = (uint8_t)((t/64 + t)/64);
+				t = (color1 & 0x001F) * 255 + 16;         b1 = (uint8_t)((t/32 + t)/32);
+			}
+
+			uint8_t pr[4], pg[4], pb[4];
+			pr[0] = r0;  pg[0] = g0;  pb[0] = b0;
+			pr[1] = r1;  pg[1] = g1;  pb[1] = b1;
+			if (color0 > color1)
+			{
+				pr[2] = (uint8_t)((2*r0 + r1)/3);  pg[2] = (uint8_t)((2*g0 + g1)/3);  pb[2] = (uint8_t)((2*b0 + b1)/3);
+				pr[3] = (uint8_t)((r0 + 2*r1)/3);  pg[3] = (uint8_t)((g0 + 2*g1)/3);  pb[3] = (uint8_t)((b0 + 2*b1)/3);
+			}
+			else
+			{
+				pr[2] = (uint8_t)((r0 + r1)/2);  pg[2] = (uint8_t)((g0 + g1)/2);  pb[2] = (uint8_t)((b0 + b1)/2);
+				pr[3] = 0;  pg[3] = 0;  pb[3] = 0;
+			}
+
+			// Precompute per-pixel alphas for DXT3/DXT5 (matches the reference
+			// decoder exactly).  DXT1a alpha is derived per pixel from the palette.
+			uint8_t alphas[16];
+			if (isDXT5)
+			{
+				uint8_t a0 = src[0], a1 = src[1];
+				const uint8_t *bits = src + 2;
+				uint32_t ac1 = (uint32_t)bits[2] | ((uint32_t)bits[3] << 8) | ((uint32_t)bits[4] << 16) | ((uint32_t)bits[5] << 24);
+				uint16_t ac2 = (uint16_t)((uint16_t)bits[0] | ((uint16_t)bits[1] << 8));
+				for (int p = 0; p < 16; ++p)
+				{
+					int idx = 3 * p;
+					int ac;
+					if (idx <= 12)       ac = (ac2 >> idx) & 0x07;
+					else if (idx == 15)  ac = (ac2 >> 15) | ((ac1 << 1) & 0x06);
+					else                 ac = (ac1 >> (idx - 16)) & 0x07;
+					if (ac == 0)         alphas[p] = a0;
+					else if (ac == 1)    alphas[p] = a1;
+					else if (a0 > a1)    alphas[p] = (uint8_t)(((8 - ac)*a0 + (ac - 1)*a1)/7);
+					else if (ac == 6)    alphas[p] = 0;
+					else if (ac == 7)    alphas[p] = 255;
+					else                 alphas[p] = (uint8_t)(((6 - ac)*a0 + (ac - 1)*a1)/5);
+				}
+			}
+			else if (isDXT3)
+			{
+				const uint16_t *ad = (const uint16_t*)src;
+				for (int j = 0; j < 4; ++j)
+					for (int i = 0; i < 4; ++i)
+						alphas[j*4 + i] = (uint8_t)(((ad[j] >> (4*i)) & 0xF) * 17);
+			}
+
+			// --- Pixel output loop ---
+			// NEON fast path for RGBA output (DXT1a, DXT3, DXT5).  Precomputed
+			// 4-entry palette is looked up via table-lookup instructions.
+			// AArch64: vqtbl1q_u8 (16-byte lookup in one op).  ARM32: vtbl2_u8
+			// (two 8-byte lookups + vcombine_u8).  Both use vbslq_u8 for alpha
+			// blending on DXT3/DXT5.
+			// Falls back to scalar for DXT1-RGB (3-byte pixels) or no NEON.
+			if ( !isDXT1RGB )
+			{
+#if defined(__aarch64__)
+				// AArch64 NEON: vqtbl1q_u8 does a single-instruction 16-byte lookup
+				// from a 16-byte palette table. 4 RGBA pixels = 1 NEON op.
+				uint8_t palette16[16];
+				for ( int p = 0; p < 4; ++p )
+				{
+					uint8_t pa = 255;
+					if ( isDXT1a && color0 <= color1 && p == 3 && transparent0 )
+						pa = 0;
+					palette16[p*4+0] = pr[p];
+					palette16[p*4+1] = pg[p];
+					palette16[p*4+2] = pb[p];
+					palette16[p*4+3] = pa;
+				}
+				uint8x16_t pal_vec = vld1q_u8( palette16 );
+
+				static const uint8_t alpha_sel[16] = { 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF };
+				uint8x16_t alpha_mask = vld1q_u8( alpha_sel );
+
+				for ( int j = 0; j < 4; ++j )
+				{
+					int py = by*4 + j;
+					uint32_t row_shift = 2 * (4*j);
+					uint8_t c0 = (uint8_t)((code >> row_shift)     & 3);
+					uint8_t c1 = (uint8_t)((code >> (row_shift+2)) & 3);
+					uint8_t c2 = (uint8_t)((code >> (row_shift+4)) & 3);
+					uint8_t c3 = (uint8_t)((code >> (row_shift+6)) & 3);
+
+					uint8x16_t idx = {
+						(uint8_t)(c0*4), (uint8_t)(c0*4+1), (uint8_t)(c0*4+2), (uint8_t)(c0*4+3),
+						(uint8_t)(c1*4), (uint8_t)(c1*4+1), (uint8_t)(c1*4+2), (uint8_t)(c1*4+3),
+						(uint8_t)(c2*4), (uint8_t)(c2*4+1), (uint8_t)(c2*4+2), (uint8_t)(c2*4+3),
+						(uint8_t)(c3*4), (uint8_t)(c3*4+1), (uint8_t)(c3*4+2), (uint8_t)(c3*4+3)
+					};
+
+					uint8x16_t result = vqtbl1q_u8( pal_vec, idx );
+
+					if ( isDXT3 || isDXT5 )
+					{
+						uint8x16_t alpha_vals = {
+							0,0,0,alphas[4*j+0],  0,0,0,alphas[4*j+1],
+							0,0,0,alphas[4*j+2],  0,0,0,alphas[4*j+3]
+						};
+						result = vbslq_u8( alpha_mask, alpha_vals, result );
+					}
+
+					uint32_t *out = (uint32_t*)pixels;
+					vst1q_u32( out + py * width + bx*4, vreinterpretq_u32_u8( result ) );
+				}
+#elif defined(__arm__)
+				// ARM32 NEON: vtbl2_u8 does 8-byte lookups from a 16-byte table
+				// (two 8-byte halves). 4 pixels = 2 vtbl2_u8 calls + vcombine_u8.
+				uint8_t palette16[16];
+				for ( int p = 0; p < 4; ++p )
+				{
+					uint8_t pa = 255;
+					if ( isDXT1a && color0 <= color1 && p == 3 && transparent0 )
+						pa = 0;
+					palette16[p*4+0] = pr[p];
+					palette16[p*4+1] = pg[p];
+					palette16[p*4+2] = pb[p];
+					palette16[p*4+3] = pa;
+				}
+				uint8x8_t pal_lo = vld1_u8( palette16 );
+				uint8x8_t pal_hi = vld1_u8( palette16 + 8 );
+				uint8x8x2_t pal_pair = { pal_lo, pal_hi };
+
+				static const uint8_t alpha_sel[16] = { 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF, 0,0,0,0xFF };
+				uint8x16_t alpha_mask = vld1q_u8( alpha_sel );
+
+				for ( int j = 0; j < 4; ++j )
+				{
+					int py = by*4 + j;
+					uint32_t row_shift = 2 * (4*j);
+					uint8_t c0 = (uint8_t)((code >> row_shift)     & 3);
+					uint8_t c1 = (uint8_t)((code >> (row_shift+2)) & 3);
+					uint8_t c2 = (uint8_t)((code >> (row_shift+4)) & 3);
+					uint8_t c3 = (uint8_t)((code >> (row_shift+6)) & 3);
+
+					// Two vtbl2_u8 calls (8 bytes each), then vcombine_u8 to 16 bytes
+					uint8x8_t idx_01 = { (uint8_t)(c0*4), (uint8_t)(c0*4+1), (uint8_t)(c0*4+2), (uint8_t)(c0*4+3),
+					                     (uint8_t)(c1*4), (uint8_t)(c1*4+1), (uint8_t)(c1*4+2), (uint8_t)(c1*4+3) };
+					uint8x8_t idx_23 = { (uint8_t)(c2*4), (uint8_t)(c2*4+1), (uint8_t)(c2*4+2), (uint8_t)(c2*4+3),
+					                     (uint8_t)(c3*4), (uint8_t)(c3*4+1), (uint8_t)(c3*4+2), (uint8_t)(c3*4+3) };
+
+					uint8x16_t result = vcombine_u8( vtbl2_u8( pal_pair, idx_01 ), vtbl2_u8( pal_pair, idx_23 ) );
+
+					if ( isDXT3 || isDXT5 )
+					{
+						uint8x16_t alpha_vals = {
+							0,0,0,alphas[4*j+0],  0,0,0,alphas[4*j+1],
+							0,0,0,alphas[4*j+2],  0,0,0,alphas[4*j+3]
+						};
+						result = vbslq_u8( alpha_mask, alpha_vals, result );
+					}
+
+					uint32_t *out = (uint32_t*)pixels;
+					vst1q_u32( out + py * width + bx*4, vreinterpretq_u32_u8( result ) );
+				}
+#else
+				for ( int j = 0; j < 4; ++j )
+				{
+					int py = by*4 + j;
+					for ( int i = 0; i < 4; ++i )
+					{
+						int px = bx*4 + i;
+						uint8_t colorCode = (uint8_t)((code >> (2*(4*j + i))) & 0x03);
+						uint8_t r = pr[colorCode], g = pg[colorCode], b = pb[colorCode];
+						uint8_t a = 255;
+						if ( isDXT5 || isDXT3 )
+							a = alphas[4*j + i];
+						else if ( isDXT1a && color0 <= color1 && colorCode == 3 && transparent0 )
+							a = 0;
+						uint32_t *out = (uint32_t*)pixels;
+						out[py * width + px] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+					}
+				}
+#endif
+			}
+			else
+			{
+				// DXT1 RGB (3 bytes per pixel) — scalar path
+				for ( int j = 0; j < 4; ++j )
+				{
+					int py = by*4 + j;
+					for ( int i = 0; i < 4; ++i )
+					{
+						int px = bx*4 + i;
+						uint8_t colorCode = (uint8_t)((code >> (2*(4*j + i))) & 0x03);
+						uint8_t r = pr[colorCode], g = pg[colorCode], b = pb[colorCode];
+						uint8_t *out = (uint8_t*)pixels;
+						int idx = (py * width + px) * 3;
+						out[idx] = r;  out[idx + 1] = g;  out[idx + 2] = b;
+					}
+				}
+			}
+
+			src += blocksize;
+		}
+	}
+	return pixels;
 }
 
 void CompressedTexImage2D(GLenum target, GLint level, GLenum internalformat,

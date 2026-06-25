@@ -32,6 +32,7 @@
 #include "tier0/dbg.h"
 #include "tier1/strtools.h"
 #include "tier1/utlbuffer.h"
+#include "tier1/convar.h"
 #include "dx9asmtogl2.h"
 
 #include "materialsystem/IShader.h"
@@ -2784,6 +2785,10 @@ void D3DToGL::HandleBinaryOp_ASM( uint32 nInstruction )
 
 void D3DToGL::WriteGLSLCmp( const char *pDestReg, const char *pSrc0Reg, const char *pSrc1Reg, const char *pSrc2Reg )
 {
+	// Decompose CMP into per-component scalar ternaries.  GLSL ES 3.00 does NOT
+	// support vector comparison operators (vec3 >= float is invalid) nor vector
+	// ternary (bvecN ? vecN : vecN is invalid — ?: requires a scalar bool).
+	// Each component must be a separate scalar (float >= float) -> bool -> select.
 	int nWriteMaskEntries = GetNumWriteMaskEntries( pDestReg );
 	for ( int i=0; i < nWriteMaskEntries; i++ )
 	{
@@ -3284,10 +3289,24 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	// 7ls
 //	const char *glslVersionText = m_bUseBindlessTexturing ? "330 compatibility" : "120";
 
+	// Fragment shaders: enable GL_ARM_shader_framebuffer_fetch when available.
+	// This makes gl_LastFragColorARM available (reads current FB color from the
+	// on-chip tile buffer on Mali TBDR — no FBO resolve needed for read-modify-
+	// write passes).  The pragma is harmless if the shader doesn't use the
+	// built-in.  Gated by a ConVar so it can be disabled for debugging.
+	static ConVarRef gl_framebuffer_fetch( "gl_framebuffer_fetch" );
+	bool bFBFetch = gGL && gGL->m_bHave_GL_ARM_shader_framebuffer_fetch
+		&& ( gl_framebuffer_fetch.IsValid() ? gl_framebuffer_fetch.GetBool() : true );
+	char fbfExtText[256];
+	if ( bFBFetch )
+		V_snprintf( fbfExtText, sizeof(fbfExtText), "#extension GL_ARM_shader_framebuffer_fetch : enable\n#define GLM_FRAMEBUFFER_FETCH 1\n" );
+	else
+		V_snprintf( fbfExtText, sizeof(fbfExtText), "\n" );
+
 	if ( ( dwToken & 0xFFFF0000 ) == 0xFFFF0000 )
 	{
 		// must explicitly enable extensions if emitting GLSL
-		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "precision highp float;\n#define varying in\n\n%s", glslExtText );
+		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision highp float;\n#define varying in\n\n%s", fbfExtText, glslExtText );
 		m_bVertexShader = false;
 	}
 	else // vertex shader
@@ -3914,7 +3933,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if( FindSubcode("_gl_FrontSecondaryColor") && !m_bFrontSecondaryColor )
 		StrcatToHeaderCode( "in vec4 _gl_FrontSecondaryColor;\n" );
 
-	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && bVertexShader )
+	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && !m_bVertexShader )
 		StrcatToHeaderCode( "\nuniform float alpha_ref;\n" );	
 
 	StrcatToHeaderCode( "\nvoid main()\n{\n" );
@@ -3933,7 +3952,13 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		StrcatToALUCode( "gl_FragData[0].xyz = mix( gl_FragData[0].xyz, sRGBFragData, flSRGBWrite );\n" );
 	}
 
-	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && bVertexShader )
+	// NOTE: this discard emulates the D3D9 D3DRS_ALPHATESTENABLE render state on
+	// GPUs without GL_QCOM_alpha_test (including Mali G31).  It is gated at
+	// runtime via the alpha_ref uniform (set to 0.0 when alpha test is disabled,
+	// making the condition never true).  The original guard used `bVertexShader`
+	// (a bool* out-parameter, always non-null) which was a no-op; use the real
+	// m_bVertexShader flag so this only applies to fragment shaders.
+	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && !m_bVertexShader )
 		StrcatToALUCode( "if( gl_FragData[0].a < alpha_ref ) { discard; };\n" );
 
 	strcat_s( (char*)m_pBufALUCode->Base(), m_pBufALUCode->Size(), "}\n" );

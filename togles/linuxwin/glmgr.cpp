@@ -54,7 +54,6 @@
 // behavior.
 ConVar gl_debug_output( "gl_debug_output", "1" );
 
-
 // Whether or not we should batch up our creation and deletion behavior. 
 ConVar gl_batch_tex_creates( "gl_batch_tex_creates", "0" );
 ConVar gl_batch_tex_destroys( "gl_batch_tex_destroys", "0" ); 
@@ -740,6 +739,7 @@ void GLMContext::DumpCaps( void )
 	dumpfield( m_cantResolveFlipped );
 	dumpfield( m_cantResolveScaled );
 	dumpfield( m_costlyGammaFlips );
+	dumpfield( m_hasFramebufferFetch );
 	dumpfield( m_badDriver1064NV );
 	dumpfield( m_badDriver108Intel );
 
@@ -1646,6 +1646,21 @@ void GLMContext::PreloadTex( CGLMTex *tex, bool force )
 	// bind the texture on TMU 15
 	// set up a dummy program to sample it but not write (use 'discard')
 	// draw a teeny little triangle that won't generate a lot of fragments
+
+	// On Mali (tile-based deferred renderer) this dummy-draw preload is a net
+	// loss: it spends a full draw-call setup + 16 glDisableVertexAttribArray
+	// calls per first-seen texture, and it clobbers the vertex-attrib dirty
+	// cache (m_boundVertexAttribs / m_lastKnownVertexAttribMask), forcing the
+	// next real draw into the expensive re-issue branch in FlushDrawStates.
+	// Mali uploads textures on demand at tile-render time anyway, so the
+	// desktop-NV "warm into VRAM" rationale does not apply.  Skip it on ARM.
+	static bool s_bIsMali = ( V_stristr( gGL->m_pGLDriverStrings[cGLVendorString], "arm" ) != NULL );
+	if ( s_bIsMali )
+	{
+		tex->m_texPreloaded = true;
+		return;
+	}
+
 	if (!m_pairCache)
 		return;
 		
@@ -1800,8 +1815,12 @@ CGLMProgram	*GLMContext::NewProgram( EGLMProgramType type, char *progString, con
 	
 	prog->SetProgramText( progString );
 	prog->SetShaderName( pShaderName );
-	prog->CompileActiveSources();
-
+	// Deferred compilation: don't call CompileActiveSources() here.
+	// If a program binary cache hit occurs in SetProgramPair, the individual
+	// shader objects never need to be compiled at all — glProgramBinary loads
+	// a pre-linked program directly.  On cache miss, SetProgramPair calls
+	// CompileActiveSources() on both shaders before attaching+linking.
+	// This skips ~1241 glShaderSource+glCompileShader calls on warm starts.
 	return prog;
 }
 
@@ -2139,10 +2158,19 @@ void GLMContext::BeginFrame( void )
 		gl_texlayoutstats.SetValue( 0 );
 	}
 	
+#if defined(USE_NATIVE_GLES)
+	// Mali GPU optimization: Skip TOF flush by default - batched commands are more efficient
+	// Mali drivers prefer command batching over explicit flushes
+	if (gl_mtglflush_at_tof.GetInt() && !GLM_NO_TOF_FLUSH)
+	{
+		gGL->glFlush();
+	}
+#else
 	if (gl_mtglflush_at_tof.GetInt())
 	{
 		gGL->glFlush();									// TOF flush - skip this if benchmarking, enable it if human playing (smoothness)
 	}
+#endif
 	
 #if GLMDEBUG
 	// init debug hook information
@@ -2532,6 +2560,7 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_boundReadFBO = NULL;
 	m_boundDrawFBO = NULL;
 	m_drawingFBO = NULL;
+	m_nReadTexelsFBO = 0;
 											
 	memset( m_drawingProgram, 0, sizeof( m_drawingProgram ) );
 	m_bDirtyPrograms = true;
@@ -2764,6 +2793,12 @@ GLMContext::~GLMContext	()
 
 	gGL->glDeleteBuffers( 1, &m_destroyPBO );
 
+	if ( m_nReadTexelsFBO )
+	{
+		gGL->glDeleteFramebuffers( 1, &m_nReadTexelsFBO );
+		m_nReadTexelsFBO = 0;
+	}
+
 	PurgeTexCache();
 
 	DecrementWindowRefCount();
@@ -2812,9 +2847,16 @@ void GLMContext::BindFBOToCtx( CGLMFBO *fbo, GLenum bindPoint )
 
 	if ( bindPoint == GL_FRAMEBUFFER )
 	{
-		gGL->glBindFramebuffer( GL_FRAMEBUFFER, fbo ? fbo->m_name : 0 );
-		m_boundReadFBO = fbo;
-		m_boundDrawFBO = fbo;
+		// Delta-check: skip the glBindFramebuffer when both read and draw already
+		// bind this FBO.  Source re-binds the same FBO frequently (shadow maps,
+		// post-fx passes) and each redundant bind forces the Mali driver to
+		// re-validate framebuffer state for no reason.
+		if ( ( m_boundReadFBO != fbo ) || ( m_boundDrawFBO != fbo ) )
+		{
+			gGL->glBindFramebuffer( GL_FRAMEBUFFER, fbo ? fbo->m_name : 0 );
+			m_boundReadFBO = fbo;
+			m_boundDrawFBO = fbo;
+		}
 		return;
 	}
 	
@@ -2825,16 +2867,20 @@ void GLMContext::BindFBOToCtx( CGLMFBO *fbo, GLenum bindPoint )
 	{
 		if (fbo)	// you can pass NULL to go back to no-FBO
 		{
-			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, fbo->m_name );
-			
-			m_boundReadFBO = fbo;
+			if ( m_boundReadFBO != fbo )
+			{
+				gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, fbo->m_name );
+				m_boundReadFBO = fbo;
+			}
 			//dontcare fbo->m_bound = true;
 		}
 		else
 		{
-			gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
-			
-			m_boundReadFBO = NULL;
+			if ( m_boundReadFBO != NULL )
+			{
+				gGL->glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
+				m_boundReadFBO = NULL;
+			}
 		}
 	}
 	
@@ -2842,16 +2888,20 @@ void GLMContext::BindFBOToCtx( CGLMFBO *fbo, GLenum bindPoint )
 	{
 		if (fbo)	// you can pass NULL to go back to no-FBO
 		{
-			gGL->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, fbo->m_name );
-			
-			m_boundDrawFBO = fbo;
+			if ( m_boundDrawFBO != fbo )
+			{
+				gGL->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, fbo->m_name );
+				m_boundDrawFBO = fbo;
+			}
 			//dontcare fbo->m_bound = true;
 		}
 		else
 		{
-			gGL->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, 0 );
-			
-			m_boundDrawFBO = NULL;
+			if ( m_boundDrawFBO != NULL )
+			{
+				gGL->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, 0 );
+				m_boundDrawFBO = NULL;
+			}
 		}
 	}
 }

@@ -271,6 +271,12 @@ GL_EXT(GL_ANGLE_texture_compression_dxt5,-1,-1)
 GL_EXT( GL_ARB_buffer_storage, 4, 4 )
 GL_FUNC_VOID( GL_ARB_buffer_storage, false, glBufferStorage, (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags), (target, size, data, flags) )
 
+// GL_ARM_shader_framebuffer_fetch / GL_EXT_shader_framebuffer_fetch
+// On Mali TBDR, allows reading the current pixel's framebuffer color directly
+// from the on-chip tile buffer.  No entry points — shader-language extension only.
+GL_EXT( GL_ARM_shader_framebuffer_fetch, -1, -1 )
+GL_EXT( GL_EXT_shader_framebuffer_fetch, -1, -1 )
+
 // This one is an OS extension. We'll add a little helper function to look for it.
 #ifdef _WIN32
 	GL_EXT(WGL_EXT_swap_control_tear,-1,-1)
