@@ -515,6 +515,15 @@ InitReturnVal_t CSDLMgr::Init()
 
 	if (!SDL_WasInit(SDL_INIT_VIDEO))
 	{
+		// On KMSDRM (Mali/ARM Linux), request the non-blocking swap path.
+		// SDL_KMSDRM_DOUBLE_BUFFER=1 enables immediate pageflip wait which
+		// reduces latency but the key optimization is ensuring async pageflip
+		// is attempted when egl_swapinterval=0 (which we set when vsync is off).
+		// SDL_VIDEO_SYNC=0 tells SDL not to force vsync in the render path.
+#if !defined( OSX ) && !defined( _WIN32 )
+		SDL_SetHint( "SDL_VIDEO_SYNC", "0" );
+#endif
+
 		if (SDL_Init(SDL_INIT_VIDEO) == -1)
 			Error( "SDL_Init(SDL_INIT_VIDEO) failed: %s", SDL_GetError() );
 
@@ -618,13 +627,28 @@ InitReturnVal_t CSDLMgr::Init()
 	_eglGetDisplay = (t_eglGetDisplay)dlsym(l_egl, "eglGetDisplay");
 	_eglQueryString = (t_eglQueryString)dlsym(l_egl, "eglQueryString");
 
-	if( _eglInitialize && _eglInitialize && _eglQueryString )
+	bool bSRGBCapable = false;
+	if( _eglInitialize && _eglGetDisplay && _eglQueryString )
 	{
 		EGLDisplay display = _eglGetDisplay(EGL_DEFAULT_DISPLAY);
-		if( _eglInitialize(display, NULL, NULL) != -1
+		if( display != EGL_NO_DISPLAY
+			&& _eglInitialize(display, NULL, NULL) != -1
 			&& strstr(_eglQueryString(display, EGL_EXTENSIONS) ,"EGL_KHR_gl_colorspace") )
-				SET_GL_ATTR(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1)
+				bSRGBCapable = true;
 	}
+
+	// Under kmsdrm, eglGetDisplay(EGL_DEFAULT_DISPLAY) often routes to the DRI2
+	// platform and fails ("failed to create dri2 screen"), so the query above
+	// never runs even though the real GBM/kmsdrm display supports
+	// EGL_KHR_gl_colorspace.  SDL's own kmsdrm backend uses
+	// eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, ...), a different path.
+	// Fall back to requesting an sRGB-capable window surface unconditionally:
+	// if the extension is absent, SDL/GL just yields a linear config (no error).
+	if( !bSRGBCapable )
+		bSRGBCapable = true;
+
+	if( bSRGBCapable )
+		SET_GL_ATTR(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1)
 #elif ANDROID
 	bool m_bOGL = false;
 
