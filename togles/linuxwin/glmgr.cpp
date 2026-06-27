@@ -79,7 +79,7 @@ extern void convert_texture( GLenum &internalformat, GLsizei width, GLsizei heig
 
 char g_nullFragmentProgramText [] =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"precision mediump float;\n"
 	"out vec4 _gl_FragColor;\n"
 	"void main()\n"
@@ -91,7 +91,7 @@ char g_nullFragmentProgramText [] =
 // make dummy programs for doing texture preload via dummy draw
 char g_preloadTexVertexProgramText[] = // Гроб гроб кладбище пидор
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"precision mediump float;\n"
 	"out vec4 otex;\n"
 	"void main()  \n"
@@ -106,7 +106,7 @@ char g_preloadTexVertexProgramText[] = // Гроб гроб кладбище п�
 
 char g_preload2DTexFragmentProgramText[] =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"precision mediump float;\n"
 	"out vec4 _gl_FragColor;\n"		
 	"in vec4 otex;\n"
@@ -126,7 +126,7 @@ char g_preload2DTexFragmentProgramText[] =
 
 char g_preload3DTexFragmentProgramText[] =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"precision mediump float;\n"
 	"out vec4 _gl_FragColor;\n"	
 	"in vec4 otex;\n"
@@ -147,7 +147,7 @@ char g_preload3DTexFragmentProgramText[] =
 
 char g_preloadCubeTexFragmentProgramText[] =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"precision mediump float;\n"
 	"in vec4 otex;\n"
 	"out vec4 _gl_FragColor;\n"
