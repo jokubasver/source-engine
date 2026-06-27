@@ -621,7 +621,7 @@ InitReturnVal_t CSDLMgr::Init()
 
 	SET_GL_ATTR(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 	SET_GL_ATTR(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	SET_GL_ATTR(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SET_GL_ATTR(SDL_GL_CONTEXT_MINOR_VERSION, 2);
 
 	_eglInitialize = (t_eglInitialize)dlsym(l_egl, "eglInitialize");
 	_eglGetDisplay = (t_eglGetDisplay)dlsym(l_egl, "eglGetDisplay");

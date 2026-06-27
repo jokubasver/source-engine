@@ -69,7 +69,7 @@
 #define GL_ALPHA_TEST_FUNC_QCOM 0x0BC1
 #define GL_ALPHA_TEST_REF_QCOM 0x0BC2
 
-#define GLSL_VERSION "#version 300 es\n"
+#define GLSL_VERSION "#version 320 es\n"
 
 extern void GLMDebugPrintf( const char *pMsg, ... );
 
