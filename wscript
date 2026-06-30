@@ -527,23 +527,7 @@ def configure(conf):
 	elif conf.env.DEST_CPU in ['arm', 'aarch64']:
 		flags += ['-fsigned-char']
 		# RK3326/Cortex-A35: tune specifically for this core
-		flags += ['-mcpu=cortex-a35', '-mtune=cortex-a35']
-		# Enable NEON, FMA, and fast FP math - critical for GLES performance
-		# AArch64 has mandatory NEON and hard-float ABI, so skip -mfpu/-mfloat-abi
-		if conf.env.DEST_CPU == 'aarch64':
-			flags += ['-fomit-frame-pointer']
-		else:
-			flags += ['-mfpu=neon-vfpv4', '-mfloat-abi=hard']
-		# Enable auto-vectorization and fast math for GLES shader pipelines
-		# -fno-math-errno: skip errno for math fns, reducing call overhead on A35's in-order pipe
-		flags += ['-ftree-vectorize', '-ffast-math', '-funsafe-math-optimizations', '-fno-math-errno']
-		# Section-level GC: let --gc-sections discard unused individual functions
-		# and data (not just whole .o files). Reduces binary size and I-cache
-		# pressure on the Cortex-A35's small 32KB L1 instruction cache.
-		flags += ['-ffunction-sections', '-fdata-sections']
-		# Linker: strip all, enable LTO GC, garbage collect unused sections,
-		# GNU hash for faster symbol lookup at load time
-		linkflags += ['-Wl,--gc-sections', '-Wl,--strip-all', '-Wl,--hash-style=gnu']
+		flags += ['-mcpu=cortex-a35']
 
 	if conf.env.DEST_CPU == 'arm':
 		flags += ['-march=armv7-a', '-mfpu=neon-vfpv4']
