@@ -2757,6 +2757,24 @@ void GLMContext::Reset()
 {
 }
 
+void GLMContext::UpdateClipPlaneUniforms()
+{
+	if ( !m_pBoundPair )
+		return;
+
+	float plane0[4], plane1[4];
+	memcpy( plane0, m_flClipPlaneOrig[0], sizeof(plane0) );
+	memcpy( plane1, m_flClipPlaneOrig[1], sizeof(plane1) );
+
+	if ( !m_ClipPlaneEnable.GetDataIndex(0).enable )
+		memset( plane0, 0, sizeof(plane0) );
+
+	if ( !m_ClipPlaneEnable.GetDataIndex(1).enable )
+		memset( plane1, 0, sizeof(plane1) );
+
+	m_pBoundPair->UpdateClipPlaneUniforms( plane0, plane1 );
+}
+
 GLMContext::~GLMContext	()
 {
 	if (m_debugFontTex)

@@ -31,6 +31,7 @@
 #define	CGLMPROGRAM_H
 
 #include <sys/stat.h>
+#include <string.h>
 
 #pragma once
 
@@ -290,6 +291,31 @@ public:
 
 	GLint					m_locVertexScreenParams; // vcscreen
 	uint					m_nScreenWidthHeight;
+
+	GLint					m_locClipPlane0; // uClipPlane0
+	GLint					m_locClipPlane1; // uClipPlane1
+
+	float					m_flClipPlaneUploaded[kGLMUserClipPlanes][4];
+	bool					m_bClipPlaneUploaded[kGLMUserClipPlanes];
+
+	FORCEINLINE void UpdateClipPlaneUniforms( const float *pPlane0, const float *pPlane1 )
+	{
+		if ( pPlane0 && ( !m_bClipPlaneUploaded[0] || memcmp( pPlane0, m_flClipPlaneUploaded[0], sizeof(m_flClipPlaneUploaded[0]) ) != 0 ) )
+		{
+			if ( m_locClipPlane0 >= 0 )
+				gGL->glUniform4fv( m_locClipPlane0, 1, pPlane0 );
+			memcpy( m_flClipPlaneUploaded[0], pPlane0, sizeof(m_flClipPlaneUploaded[0]) );
+			m_bClipPlaneUploaded[0] = true;
+		}
+
+		if ( pPlane1 && ( !m_bClipPlaneUploaded[1] || memcmp( pPlane1, m_flClipPlaneUploaded[1], sizeof(m_flClipPlaneUploaded[1]) ) != 0 ) )
+		{
+			if ( m_locClipPlane1 >= 0 )
+				gGL->glUniform4fv( m_locClipPlane1, 1, pPlane1 );
+			memcpy( m_flClipPlaneUploaded[1], pPlane1, sizeof(m_flClipPlaneUploaded[1]) );
+			m_bClipPlaneUploaded[1] = true;
+		}
+	}
 		
 };	
 
