@@ -709,6 +709,10 @@ CGLMShaderPair::CGLMShaderPair( GLMContext *ctx  )
 	m_locVertexBoneParams = -1;
 	m_locVertexScreenParams = -1;
 	m_nScreenWidthHeight = 0xFFFFFFFF;
+	m_locClipPlane0 = -1;
+	m_locClipPlane1 = -1;
+	memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
+	memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
 	m_locVertexInteger0 = -1;	// "i0"
 	memset( m_locVertexBool, 0xFF, sizeof( m_locVertexBool ) );
 	memset( m_locFragmentBool, 0xFF, sizeof( m_locFragmentBool ) );
@@ -802,10 +806,14 @@ bool CGLMShaderPair::ValidateProgramPair()
 			m_locVertexParams = gGL->glGetUniformLocation( m_program, "vc" );
 			m_locVertexBoneParams = gGL->glGetUniformLocation( m_program, "vcbones" );
 			m_locVertexScreenParams = gGL->glGetUniformLocation( m_program, "vcscreen" );
+			m_locClipPlane0 = gGL->glGetUniformLocation( m_program, "uClipPlane0" );
+			m_locClipPlane1 = gGL->glGetUniformLocation( m_program, "uClipPlane1" );
 			if( !gGL->m_bHave_GL_QCOM_alpha_test )
 				m_locAlphaRef = gGL->glGetUniformLocation( m_program, "alpha_ref" );
 
 			m_nScreenWidthHeight = 0xFFFFFFFF;
+			memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
+			memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
 
 			m_locVertexInteger0 = gGL->glGetUniformLocation( m_program, "i0" );
 
@@ -882,7 +890,11 @@ bool CGLMShaderPair::ValidateProgramPair()
 			m_locVertexParams = -1;
 			m_locVertexBoneParams = -1;
 			m_locVertexScreenParams = -1;
+			m_locClipPlane0 = -1;
+			m_locClipPlane1 = -1;
 			m_nScreenWidthHeight = 0xFFFFFFFF;
+			memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
+			memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
 
 			m_locVertexInteger0 = -1;
 			memset( m_locVertexBool, 0xFF, sizeof(m_locVertexBool) );

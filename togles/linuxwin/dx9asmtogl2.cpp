@@ -3678,7 +3678,12 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( m_bVertexShader )
 	{
 		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 vcscreen;\n" );
+		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 uClipPlane0;\n" );
+		PrintToBuf( *m_pBufHeaderCode, "uniform vec4 uClipPlane1;\n" );
 	}
+
+	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist0;\n" );
+	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist1;\n" );
 				
 	for( int i=0; i<32; i++ )
 	{
@@ -3749,7 +3754,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		}
 	}
 
-	if ( m_bVertexShader && (m_bDoUserClipPlanes || m_bDoFixupZ  || m_bDoFixupY ) )
+	if ( m_bVertexShader )
 	{
 		PrintIndentation( (char*)m_pBufParamCode->Base(), m_pBufParamCode->Size() );
 		StrcatToParamCode( "vec4 vTempPos;\n" );
@@ -3795,10 +3800,8 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		
 	if ( m_bDeclareVSOPos && m_bVertexShader )
 	{
-		if ( m_bDoUserClipPlanes )
-		{
-//			StrcatToALUCode( "gl_ClipVertex = vTempPos;\n" ); // if user clip is enabled, jam clip space position into gl_ClipVertex
-		}
+		StrcatToALUCode( "vClipDist0 = dot( vTempPos, uClipPlane0 );\n" );
+		StrcatToALUCode( "vClipDist1 = dot( vTempPos, uClipPlane1 );\n" );
 		
 		if ( m_bDoFixupZ  || m_bDoFixupY )
 		{
@@ -3960,6 +3963,29 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	// m_bVertexShader flag so this only applies to fragment shaders.
 	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && !m_bVertexShader )
 		StrcatToALUCode( "if( gl_FragData[0].a < alpha_ref ) { discard; };\n" );
+
+	if( !m_bVertexShader )
+	{
+		// Prepend the clip-plane discard to the front of the ALU code so fragments
+		// are thrown away before doing any texture/color work.
+		const char *szDiscard = "if( vClipDist0 < 0.0 || vClipDist1 < 0.0 ) discard;\n";
+		char szIndentedDiscard[256];
+		szIndentedDiscard[0] = '\0';
+		PrintIndentation( szIndentedDiscard, sizeof( szIndentedDiscard ) );
+		strcat_s( szIndentedDiscard, sizeof( szIndentedDiscard ), szDiscard );
+
+		int nDiscardLen = V_strlen( szIndentedDiscard );
+		int nOldLen = V_strlen( (char*)m_pBufALUCode->Base() );
+
+		// The ALU buffer is sized well beyond typical shader output (60000 bytes).
+		// Make sure we have room, then shift the existing code right and insert.
+		m_pBufALUCode->EnsureCapacity( nOldLen + nDiscardLen + 1 );
+		Assert( nOldLen + nDiscardLen + 1 <= m_pBufALUCode->Size() );
+
+		char *pBase = (char*)m_pBufALUCode->Base();
+		memmove( pBase + nDiscardLen, pBase, nOldLen + 1 );
+		memcpy( pBase, szIndentedDiscard, nDiscardLen );
+	}
 
 	strcat_s( (char*)m_pBufALUCode->Base(), m_pBufALUCode->Size(), "}\n" );
 

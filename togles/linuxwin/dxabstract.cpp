@@ -5225,6 +5225,8 @@ void IDirect3DDevice9::InitStates()
 	for( int x=0; x<kGLMUserClipPlanes; x++)
 		m_ctx->m_ClipPlaneEnable.ReadIndex( &gl.m_ClipPlaneEnable[x], x, 0 );
 
+	memset( m_ctx->m_flClipPlaneOrig, 0, sizeof( m_ctx->m_flClipPlaneOrig ) );
+
 	m_ctx->m_PolygonMode.Read( &gl.m_PolygonMode, 0 );
 	m_ctx->m_CullFrontFace.Read( &gl.m_CullFrontFace, 0 );
 	m_ctx->m_AlphaToCoverageEnable.Read( &gl.m_AlphaToCoverageEnable, 0 );
@@ -5866,6 +5868,12 @@ HRESULT IDirect3DDevice9::SetClipPlane(DWORD Index,CONST float* pPlane)
 		peq.w = pPlane[3];
 
 		gl.m_ClipPlaneEquation[ Index ] = peq;
+
+		m_ctx->m_flClipPlaneOrig[Index][0] = peq.x;
+		m_ctx->m_flClipPlaneOrig[Index][1] = peq.y;
+		m_ctx->m_flClipPlaneOrig[Index][2] = peq.z;
+		m_ctx->m_flClipPlaneOrig[Index][3] = peq.w;
+
 		FlushClipPlaneEquation();
 
 		// m_ctx->WriteClipPlaneEquation( &peq, Index );

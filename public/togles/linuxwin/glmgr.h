@@ -553,7 +553,9 @@ FORCEINLINE void GLContextSetIndexed( GLClipPlaneEnable_t *src, int index )
 		}
 	}
 #endif
-	glSetEnable( GL_CLIP_PLANE0 + index, src->enable != 0 );
+	// Clip planes are implemented in shader on GLES2; GL_CLIP_PLANE0 is not a valid capability here.
+	(void)src;
+	(void)index;
 }
 
 FORCEINLINE void GLContextGetIndexed( GLClipPlaneEnable_t *dst, int index )
@@ -1401,6 +1403,8 @@ class GLMContext
 		// Called when IDirect3DDevice9::Reset() is called.
 		void	Reset();							
 
+		void	UpdateClipPlaneUniforms();
+
 		// writers for the state block inputs
 		
 		FORCEINLINE void	WriteAlphaTestEnable( GLAlphaTestEnable_t *src ) { m_AlphaTestEnable.Write( src ); }
@@ -1634,6 +1638,7 @@ class GLMContext
 		
 		GLStateArray<GLClipPlaneEnable_t,kGLMUserClipPlanes> m_ClipPlaneEnable;
 		GLStateArray<GLClipPlaneEquation_t,kGLMUserClipPlanes> m_ClipPlaneEquation;	// dxabstract puts them directly into param slot 253(0) and 254(1)
+		float						m_flClipPlaneOrig[kGLMUserClipPlanes][4];	// original (pre-munge) clip plane equations for shader uniforms
 		
 		GLState<GLScissorEnable_t>		m_ScissorEnable;	
 		GLState<GLScissorBox_t>			m_ScissorBox;
