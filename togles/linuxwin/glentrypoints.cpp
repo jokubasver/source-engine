@@ -377,7 +377,18 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 	else if ( V_stristr( m_pGLDriverStrings[cGLVendorString], "qualcomm" ) )
 		m_nDriverProvider = cGLDriverProviderQualcomm;
 	else if ( V_stristr( m_pGLDriverStrings[cGLVendorString], "arm" ) )
+	{
 		m_nDriverProvider = cGLDriverProviderARM;
+
+		// Mali TBDR: Disable GL_EXT_buffer_storage by default - persistent coherent
+		// ring buffers cause frequent fence syncs + glMapBufferRange stalls on Mali.
+		// Pseudo-buffers use client memory directly, avoiding GPU sync entirely.
+		m_bHave_GL_EXT_buffer_storage = false;
+
+		// Force pseudo-buffers for dynamic VBOs on Mali to avoid buffer map stalls.
+		g_bUsePseudoBufs = true;
+		g_bDisableStaticBuffer = true;
+	}
 	else if ( V_stristr( m_pGLDriverStrings[cGLVendorString], "imagination technologies" ) )
 		m_nDriverProvider = cGLDriverProviderImagination;
 

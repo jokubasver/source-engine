@@ -983,39 +983,39 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	{
 		if (blitResolves && blitScales)
 		{
-			if (m_caps.m_cantResolveScaled)
+			bool blitScalesDown = ((srcRect->xmax - srcRect->xmin) > (dstRect->xmax - dstRect->xmin)) || ((srcRect->ymax - srcRect->ymin) > (dstRect->ymax - dstRect->ymin));
+			int mode = (blitScalesDown) ? gl_minify_resolve_mode.GetInt() : gl_magnify_resolve_mode.GetInt();
+
+			// If resolve mode is set to 1 or 2, force single-step even if the driver
+			// reports it can't do scaled resolves. On TBDR GPUs (Mali), a simple GL_NEAREST
+			// blit with scaling still completes in one tile pass - we just won't get
+			// bilinear filtering during the resolve. The convar override lets us skip
+			// the extra copy step that doubles tile-buffer flushes.
+			if (m_caps.m_cantResolveScaled && mode == 0)
 			{
 				// filter is unchanged, two step mode switches on
 				blitTwoStep = true;
 			}
+			else if (mode != 0)
+			{
+				// User wants single-step (mode 1 or 2). Try it regardless of caps.
+				// If the driver doesn't support scaled resolve filters, the GL call will
+				// either work with NEAREST filtering or fall back gracefully.
+				blitTwoStep = false;
+
+				if (mode == 1)
+				{
+					filter = XGL_SCALED_RESOLVE_FASTEST_EXT;
+				}
+				else if (mode == 2)
+				{
+					filter = XGL_SCALED_RESOLVE_NICEST_EXT;
+				}
+			}
 			else
 			{
-				bool	blitScalesDown	= ((srcRect->xmax - srcRect->xmin) > (dstRect->xmax - dstRect->xmin)) || ((srcRect->ymax - srcRect->ymin) > (dstRect->ymax - dstRect->ymin));
-				int		mode			= (blitScalesDown) ? gl_minify_resolve_mode.GetInt() : gl_magnify_resolve_mode.GetInt();
-				
-				// roughly speaking, resolve blits that minify represent setup for special effects ("copy framebuffer to me")
-				// resolve blits that magnify are almost always on the final present in the case where remder size < display size
-				
-				switch( mode )
-				{
-					case 0:
-					default:
-						// filter is unchanged, two step mode
-						blitTwoStep = true;
-					break;
-						
-					case 1:
-						// filter goes to fastest, one step mode
-						blitTwoStep = false;
-						filter = XGL_SCALED_RESOLVE_FASTEST_EXT;
-					break;
-						
-					case 2:
-						// filter goes to nicest, one step mode
-						blitTwoStep = false;
-						filter = XGL_SCALED_RESOLVE_NICEST_EXT;
-					break;					
-				}
+				// mode == 0 and caps say we can resolve scaled: use two-step as default
+				blitTwoStep = true;
 			}
 		}	
 	}
@@ -2390,9 +2390,21 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nNumDirtySamplers = 0;
 
 	if( gGL->m_nDriverProvider == cGLDriverProviderARM )
+	{
 		m_bUseSamplerObjects = true;
+
+		// Mali TBDR: Apply performance optimizations that reduce tile-buffer flushes.
+		// These settings force single-step blits (one tile pass instead of two) and
+		// allow flipped resolves, which is critical for TBDR GPU performance.
+		gl_can_resolve_flipped.SetValue( 1 );
+		gl_cannot_resolve_flipped.SetValue( 0 );
+		gl_minify_resolve_mode.SetValue( 2 );
+		gl_magnify_resolve_mode.SetValue( 2 );
+	}
 	else
+	{
 		m_bUseSamplerObjects = false;
+	}
 
 	if ( CommandLine()->CheckParm( "-gl_enablesamplerobjects" ) )
 		m_bUseSamplerObjects = true;

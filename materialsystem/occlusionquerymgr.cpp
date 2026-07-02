@@ -175,10 +175,23 @@ void COcclusionQueryMgr::BeginOcclusionQueryDrawing( OcclusionQueryObjectHandle_
 						DevWarning( "blocking issue in occlusion queries! Grab brian!\n" );
 					}
 				}
+
+				// Timeout after ~16ms to prevent infinite stalls on TBDR GPUs (Mali) where
+				// GL_QUERY_RESULT blocks until tile buffer is fully resolved.
+				static ConVarRef gl_occlusionquery_timeout( "gl_occlusionquery_timeout" );
+				double flStart = Plat_FloatTime();
+				double flTimeout = gl_occlusionquery_timeout.IsValid() ? gl_occlusionquery_timeout.GetFloat() : 0.016f;
+
 				while( !OCCLUSION_QUERY_FINISHED( nPixels ) ) 
 				{
-					// We're going to reuse this query, so issue a flush to force the query results to come back.
 					nPixels = g_pShaderAPI->OcclusionQuery_GetNumPixelsRendered( hQuery, true );
+					if ( Plat_FloatTime() - flStart > flTimeout )
+					{
+						// Give up to prevent GPU starvation. Set result to 0 (no pixels)
+						// for conservative culling so the game can continue rendering.
+						nPixels = 0;
+						break;
+					}
 				}
 				if ( nPixels >= 0 )
 				{
