@@ -472,20 +472,14 @@ CGLMBuffer::CGLMBuffer( GLMContext *pCtx, EGLMBufferType type, uint size, uint o
 	m_bPseudo = true;
 #endif
 
-	// RK3326/Mali-G31 (Bifrost): Use pseudo-buffers for dynamic VBOs on Mali.
-	// Mali G31 r13p0 technically supports GL_EXT_buffer_storage, but the
-	// persistent-coherent ring-buffer path has high overhead on this GPU
-	// (frequent fence syncs + glMapBufferRange stalls), and Source's
-	// discard+relock pattern suits client-side memory better on UMA Mali.
-	// Pseudo-buffers use client memory directly, avoiding GPU sync entirely.
-	// GL_EXT_buffer_storage is therefore left DISABLED (see glentrypoints.cpp)
-	// so the Lock() persistent path (line ~766) is not taken; pseudo (m_bPseudo)
-	// is checked first and wins for all dynamic buffers.
-	if( V_stristr(gGL->m_pGLDriverStrings[cGLVendorString], "arm") != NULL )
-	{
-		g_bUsePseudoBufs = true; // client-side buffers avoid Mali sync overhead
-		g_bDisableStaticBuffer = true; // static buffers don't help on Mali
-	}
+	// Mali G31 r13p0: Do NOT force pseudo-buffers for dynamic VBOs.
+	// Pseudo-buffers pass raw CPU pointers to glVertexAttribPointer, which forces
+	// the Mali driver to copy vertex+index data from CPU→GPU on every draw call.
+	// This is a massive fixed per-batch cost that dominates frame time and makes
+	// FPS invariant to graphical settings. Using real GL buffer objects with
+	// glMapBufferRange(GL_MAP_UNSYNCHRONIZED_BIT) avoids both the client-pointer
+	// overhead AND the persistent-buffer fence sync stalls that were the original
+	// concern. GL_EXT_buffer_storage remains DISABLED (see glentrypoints.cpp).
 
 #if GL_ENABLE_INDEX_VERIFICATION
 	m_BufferSpanManager.Init( m_pCtx, m_type, 512, m_nSize, m_bDynamic );

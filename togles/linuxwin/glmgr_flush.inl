@@ -240,6 +240,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 			m_programParamsI[kGLMVertexProgram].m_dirtySlotCount = kGLMProgramParamInt4Limit;
 			m_programParamsI[kGLMFragmentProgram].m_dirtySlotCount = 0;
 
+			// alpha_ref uniform location may differ across programs, force a re-set
+			m_flLastAlphaRef = -1.0f;
+
 			// check fragment buffers used (MRT)
 			if( pNewPair->m_fragmentProg->m_fragDataMask != m_fragDataMask )
 			{
@@ -484,10 +487,12 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_pBoundPair->m_locAlphaRef != -1 )
 	{
-		if( !m_AlphaTestEnable.GetData().enable )
-			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, 0.0 );
-		else
-			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, m_AlphaTestFunc.GetData().ref );			
+		float flRef = m_AlphaTestEnable.GetData().enable ? m_AlphaTestFunc.GetData().ref : 0.0f;
+		if ( flRef != m_flLastAlphaRef )
+		{
+			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, flRef );
+			m_flLastAlphaRef = flRef;
+		}
 	}
 
 	Assert( ( m_pDevice->m_streams[0].m_vtxBuffer && ( m_pDevice->m_streams[0].m_vtxBuffer->m_vtxBuffer == m_pDevice->m_vtx_buffers[0] ) ) || ( ( !m_pDevice->m_streams[0].m_vtxBuffer ) && ( m_pDevice->m_vtx_buffers[0] == m_pDevice->m_pDummy_vtx_buffer ) ) );

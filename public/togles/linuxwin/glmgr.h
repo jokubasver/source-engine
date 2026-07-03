@@ -1783,6 +1783,7 @@ class GLMContext
 		int								m_debugFrameIndex;			// init to -1. Increment at BeginFrame
 												
 		int							    m_nMaxUsedVertexProgramConstantsHint;
+		float							m_flLastAlphaRef;				// cached last alpha_ref uniform value, init to -1
 		
 		uint32							m_dwRenderThreadId;
 		volatile bool					m_bIsThreading;

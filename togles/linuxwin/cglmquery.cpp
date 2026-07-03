@@ -48,11 +48,9 @@ extern ConVar gl_errorchecknone;
 // how many microseconds to wait after a failed query-available test
 // presently on MTGL this doesn't happen, but it could change, keep this handy
 
-// Mali TBDR / ARM: GL_QUERY_RESULT blocks until tile buffer is fully resolved,
-// causing severe CPU-GPU stalls. Null queries return 0 pixels rendered which
-// enables conservative culling without blocking the render thread.
-ConVar  gl_nullqueries( "gl_nullqueries", "1", FCVAR_NONE, 
-	"Nullify occlusion queries to prevent tile-buffer flush stalls on TBDR GPUs (Mali). Returns 0 pixels (conservative culling)." );
+// how many microseconds to wait after a failed query-available test
+// presently on MTGL this doesn't happen, but it could change, keep this handy
+ConVar  gl_nullqueries( "gl_nullqueries", "0" );
 
 
 //===============================================================================

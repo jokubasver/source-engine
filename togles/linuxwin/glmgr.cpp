@@ -2429,6 +2429,8 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 	ClearCurAttribs();
 
+	m_flLastAlphaRef = -1.0f;
+
 	m_nCurPersistentBuffer = 0;
 	if ( gGL->m_bHave_GL_EXT_buffer_storage )
 	{

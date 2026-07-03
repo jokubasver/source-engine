@@ -382,12 +382,9 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 
 		// Mali TBDR: Disable GL_EXT_buffer_storage by default - persistent coherent
 		// ring buffers cause frequent fence syncs + glMapBufferRange stalls on Mali.
-		// Pseudo-buffers use client memory directly, avoiding GPU sync entirely.
+		// Do NOT force pseudo-buffers - client vertex arrays cause the Mali driver
+		// to copy vertex+index data on every draw call, tanking FPS.
 		m_bHave_GL_EXT_buffer_storage = false;
-
-		// Force pseudo-buffers for dynamic VBOs on Mali to avoid buffer map stalls.
-		g_bUsePseudoBufs = true;
-		g_bDisableStaticBuffer = true;
 	}
 	else if ( V_stristr( m_pGLDriverStrings[cGLVendorString], "imagination technologies" ) )
 		m_nDriverProvider = cGLDriverProviderImagination;

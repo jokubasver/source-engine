@@ -1123,23 +1123,17 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 		m_vertexProg = vp;
 		m_fragmentProg = fp;
 
-		// force the locations for input attributes v0-vN to be at locations 0-N
-		// use the vertex attrib map to know which slots are live or not... oy!  we don't have that map yet... but it's OK.
-		// fallback - just force v0-v15 to land in locations 0-15 as a standard.
-		// (Must be done before BOTH glLinkProgram and glProgramBinary.)
-		for( int i = 0; i < 16; i++ )
-		{
-			char tmp[16];
-			sprintf(tmp, "v%d", i);	// v0 v1 v2 ... et al
-				
-			gGL->glBindAttribLocation( m_program, i, tmp );
-		}
-
 		// Try to load a cached, driver-native program binary first.  This skips
 		// the source attach + compile + link entirely on warm starts, which is
 		// the dominant cost on Mali's slow compiler.  On any failure (no cache
 		// file, stale/corrupt binary, driver changed) we fall through to the
 		// normal source attach+link path, so this is always safe.
+		//
+		// NOTE: glBindAttribLocation MUST NOT be called before glProgramBinary
+		// because on some drivers (notably Mali) it causes the binary to be
+		// rejected, forcing a full recompile.  The binary was already compiled
+		// with the same bindings when it was saved, so the attribute locations
+		// 0-15 for v0-v15 are baked in.
 		bool bUsedBinaryCache = false;
 		if ( gl_program_binary_cache.GetInt() && gGL->glProgramBinary && gGL->glGetProgramBinary )
 		{
@@ -1154,6 +1148,18 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 
 		if ( !bUsedBinaryCache )
 		{
+			// force the locations for input attributes v0-vN to be at locations 0-N
+			// use the vertex attrib map to know which slots are live or not... oy!  we don't have that map yet... but it's OK.
+			// fallback - just force v0-v15 to land in locations 0-15 as a standard.
+			// Must be done BEFORE glLinkProgram (but NOT before glProgramBinary, see above).
+			for( int i = 0; i < 16; i++ )
+			{
+				char tmp[16];
+				sprintf(tmp, "v%d", i);	// v0 v1 v2 ... et al
+
+				gGL->glBindAttribLocation( m_program, i, tmp );
+			}
+
 #if !GLM_FREE_SHADER_TEXT
 			if (CommandLine()->CheckParm("-dumpallshaders"))
 			{
