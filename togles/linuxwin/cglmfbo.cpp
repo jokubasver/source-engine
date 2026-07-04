@@ -198,7 +198,7 @@ void	CGLMFBO::TexAttach( GLMFBOTexAttachParams *params, EGLMFBOAttachment attach
 
 		case GL_TEXTURE_3D:
 		{
-//			gGL->glFramebufferTexture3DEXT( fboBindPoint, attachIndexGL, target, tex->m_texName, params->m_mip, params->m_zslice );
+			gGL->glFramebufferTexture3D( fboBindPoint, attachIndexGL, target, tex->m_texName, params->m_mip, params->m_zslice );
 		}
 		break;
 
@@ -280,7 +280,7 @@ void	CGLMFBO::TexDetach( EGLMFBOAttachment attachIndex, GLenum fboBindPoint )
 
 			case GL_TEXTURE_3D:
 			{
-//				gGL->glFramebufferTexture3DEXT( fboBindPoint, attachIndexGL, target, 0, 0, 0 );
+				gGL->glFramebufferTexture3D( fboBindPoint, attachIndexGL, target, 0, 0, 0 );
 			}
 			break;
 

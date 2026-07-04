@@ -73,7 +73,7 @@ def build(bld):
 	togl_cflags = []
 	togl_linkflags = []
 	if bld.env.DEST_CPU in ['arm', 'aarch64'] and bld.env.COMPILER_CC != 'msvc':
-		togl_cflags = ['-flto']
+		togl_cflags = ['-flto', '-ffast-math']
 		togl_linkflags = ['-flto']
 
 	bld.shlib(
