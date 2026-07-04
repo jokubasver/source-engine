@@ -38,8 +38,8 @@ void GLMRendererInfo::Init( GLMRendererInfoFields *info )
         m_info.m_accelerated = 1;
         m_info.m_windowed = 1;
         
-        m_info.m_ati = true;
-        m_info.m_atiNewer = true;
+        m_info.m_ati = false;
+        m_info.m_atiNewer = false;
 
         m_info.m_hasGammaWrites = true;
 	m_info.m_cantAttachSRGB = false;
@@ -53,7 +53,7 @@ void GLMRendererInfo::Init( GLMRendererInfoFields *info )
         // If you haven't created a GL context by now (and initialized gGL), you're about to crash.
 
         m_info.m_hasMixedAttachmentSizes = gGL->m_bHave_GL_EXT_framebuffer_object;
-        m_info.m_hasBGRA = gGL->m_bHave_GL_EXT_vertex_array_bgra;
+        m_info.m_hasBGRA = gGL->m_bHave_GL_EXT_texture_format_BGRA8888;
 
         // !!! FIXME: what do these do on the Mac?
         m_info.m_hasNewFullscreenMode = false;
@@ -291,7 +291,7 @@ void GLMDisplayDB::PopulateRenderers( void )
                 }
         }
 
-        // Clamp the min amount of video memory to 256MB in case a query returned something bogus, or we interpreted it badly.
+        // Clamp the min amount of video memory to 128MB in case a query returned something bogus, or we interpreted it badly.
         fields.m_vidMemory = MAX( fields.m_vidMemory, 128 * 1024 * 1024 );
         fields.m_texMemory = fields.m_vidMemory;
 

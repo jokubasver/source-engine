@@ -232,6 +232,7 @@ GL_EXT(GL_ANGLE_texture_compression_dxt3,-1,-1)
 GL_EXT(GL_ANGLE_texture_compression_dxt5,-1,-1)
 
 GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
+GL_EXT( GL_EXT_texture_format_BGRA8888, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
 GL_FUNC_VOID( GL_EXT_buffer_storage, false, glBufferStorageEXT, (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags), (target, size, data, flags) )
