@@ -47,17 +47,13 @@ def build(bld):
 	defines = [
 		# Disable GL batch perf analysis call timers (removes GL_BATCH_PERF_CALL_TIMER overhead)
 		'GL_BATCH_PERF_ANALYSIS=0',
-		# Disable fake sRGB write log/exp emulation - use GL_FRAMEBUFFER_SRGB hardware path
-		'FAKE_SRGB_WRITE=0',
 	]
 	gl_libs = ['GLESv2','EGL','tier0','tier1','tier2','vstdlib','mathlib']
 	if bld.env.DEST_CPU in ['arm','aarch64']:
-		# Use native GLES entry points on Mali (skip GL dispatch overhead)
-		defines += ['USE_NATIVE_GLES']
-		
-		# Disable TOF flushes on Mali - batched commands are more efficient on TBDR
-		# (applies to both AArch64 and AArch32 on Mali GPUs)
-		defines += ['GLM_NO_TOF_FLUSH=1']
+		# Mali TBDR: skip glFlush() in BeginFrame — Mali batches commands internally
+		# and syncs at natural boundaries (frame present). Mid-frame flush forces
+		# an early tile resolve, wasting GPU time on an in-order pipeline.
+		defines += ['GL_SKIP_TOF_FLUSH']
 
 	libs = gl_libs
 

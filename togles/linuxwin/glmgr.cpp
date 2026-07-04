@@ -55,8 +55,8 @@
 ConVar gl_debug_output( "gl_debug_output", "1" );
 
 // Whether or not we should batch up our creation and deletion behavior. 
-ConVar gl_batch_tex_creates( "gl_batch_tex_creates", "0" );
-ConVar gl_batch_tex_destroys( "gl_batch_tex_destroys", "0" ); 
+ConVar gl_batch_tex_creates( "gl_batch_tex_creates", "1" );
+ConVar gl_batch_tex_destroys( "gl_batch_tex_destroys", "1" ); 
 
 //===============================================================================
 
@@ -2158,14 +2158,7 @@ void GLMContext::BeginFrame( void )
 		gl_texlayoutstats.SetValue( 0 );
 	}
 	
-#if defined(USE_NATIVE_GLES)
-	// Mali GPU optimization: Skip TOF flush by default - batched commands are more efficient
-	// Mali drivers prefer command batching over explicit flushes
-	if (gl_mtglflush_at_tof.GetInt() && !GLM_NO_TOF_FLUSH)
-	{
-		gGL->glFlush();
-	}
-#else
+#if !defined(GL_SKIP_TOF_FLUSH)
 	if (gl_mtglflush_at_tof.GetInt())
 	{
 		gGL->glFlush();									// TOF flush - skip this if benchmarking, enable it if human playing (smoothness)
@@ -3030,8 +3023,11 @@ void GLMContext::CleanupTex( GLenum texBind, GLMTexLayout* pLayout, GLuint tex )
 		}
 		else
 		{
-			convert_texture( pLayout->m_format->m_glIntFormat, mipDim, mipDim, pLayout->m_format->m_glDataFormat, pLayout->m_format->m_glDataType, NULL );
-			gGL->glTexImage2D( texBind, i, pLayout->m_format->m_glIntFormat, mipDim, mipDim, 0, pLayout->m_format->m_glDataFormat, pLayout->m_format->m_glDataType, NULL );
+			GLenum intfmt = pLayout->m_format->m_glIntFormat;
+			GLenum fmt    = pLayout->m_format->m_glDataFormat;
+			GLenum dtype  = pLayout->m_format->m_glDataType;
+			convert_texture( intfmt, mipDim, mipDim, fmt, dtype, NULL );
+			gGL->glTexImage2D( texBind, i, intfmt, mipDim, mipDim, 0, fmt, dtype, NULL );
 		}
 	}
 
