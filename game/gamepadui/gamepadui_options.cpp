@@ -1226,6 +1226,35 @@ GamepadUIOptionsPanel::GamepadUIOptionsPanel( vgui::Panel* pParent, const char* 
     LoadOptionTabs( GAMEPADUI_OPTIONS_FILE );
     FillInBindings();
 
+    // Add gamma slider to the Video tab, after HUD Aspect Ratio (index 3)
+    for ( int i = 0; i < m_nTabCount; i++ )
+    {
+        if ( V_stristr( m_Tabs[i].pTabButton->GetName(), "Video" ) )
+        {
+            auto pGammaSlider = new GamepadUISlideySlide(
+                "mat_monitorgamma", "", true, 1.6f, 2.6f, 0.1f, 1,
+                this, this,
+                GAMEPADUI_RESOURCE_FOLDER "schemeoptions_slideyslide.res",
+                "button_pressed",
+                "#GameUI_Gamma", "" );
+            pGammaSlider->SetToDefault();
+
+            int nInsertAfter = Min( 3, m_Tabs[i].pButtons.Count() - 1 );
+            if ( nInsertAfter >= 0 )
+                m_Tabs[i].pButtons.InsertAfter( nInsertAfter, pGammaSlider );
+            else
+                m_Tabs[i].pButtons.AddToTail( pGammaSlider );
+
+            CUtlVector< GamepadUIButton* >& pButtons = m_Tabs[i].pButtons;
+            for ( int j = 1; j < pButtons.Count(); j++ )
+            {
+                pButtons[j]->SetNavUp( pButtons[j - 1] );
+                pButtons[j - 1]->SetNavDown( pButtons[j] );
+            }
+            break;
+        }
+    }
+
     SetActiveTab( GetActiveTab() );
 
     UpdateGradients();
