@@ -161,7 +161,22 @@ void CPersistentBuffer::BlockUntilNotBusy()
 #ifdef HAVE_GL_ARB_SYNC
 	if (m_nSyncObj)
 	{
-		gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 3000000000000ULL );
+		// Wait with a bounded timeout instead of blocking indefinitely.
+		// On Mali TBDR, the GPU can take a long time to finish with a buffer,
+		// and the old 300-second timeout would freeze the render thread for
+		// minutes.  100ms is enough for a frame's worth of GPU work; if it
+		// actually times out something is very wrong and we're better off
+		// letting the sync object leak than hanging the engine.
+		GLenum waitResult = gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ULL );
+		if ( waitResult == GL_TIMEOUT_EXPIRED || waitResult == GL_WAIT_FAILED )
+		{
+			// Don't delete the sync object — the GPU still owns it.
+			// Just reset our handle so we don't wait on it again.
+			Warning( "CPersistentBuffer::BlockUntilNotBusy: sync wait timed out, leaking sync object\n" );
+			m_nSyncObj = 0;
+			m_nOffset = 0;
+			return;
+		}
 
 		gGL->glDeleteSync( m_nSyncObj );
 
@@ -850,8 +865,15 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 		// map
 		char *mapPtr;
 
-		// m_bEnableAsyncMap is actually pParams->m_bNoOverwrite
-		GLbitfield parms = GL_MAP_WRITE_BIT | ( m_bEnableAsyncMap ? GL_MAP_UNSYNCHRONIZED_BIT : 0 ) | ( pParams->m_bDiscard ? GL_MAP_INVALIDATE_BUFFER_BIT : 0 ) | ( m_bEnableExplicitFlush ? GL_MAP_FLUSH_EXPLICIT_BIT : 0 );
+		// Always use GL_MAP_UNSYNCHRONIZED_BIT for write-only buffer maps.
+		// Without it, glMapBufferRange blocks the CPU until the GPU finishes
+		// reading the buffer — a multi-second stall on Mali TBDR.
+		// This is safe because:
+		// - On DISCARD, the buffer was just orphaned via glBufferData(NULL)
+		//   so the GPU has a fresh allocation and won't read old data.
+		// - On NOOVERWRITE, the caller guarantees the GPU is done with this region.
+		// - On plain writes, the engine only writes to VB/IB locks, never reads.
+		GLbitfield parms = GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | ( pParams->m_bDiscard ? GL_MAP_INVALIDATE_BUFFER_BIT : 0 ) | ( m_bEnableExplicitFlush ? GL_MAP_FLUSH_EXPLICIT_BIT : 0 );
 
 #ifdef REPORT_LOCK_TIME
 		double flStart = Plat_FloatTime();
