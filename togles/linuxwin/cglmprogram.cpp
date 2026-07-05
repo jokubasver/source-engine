@@ -54,7 +54,11 @@
 //===============================================================================
 
 ConVar	gl_shaderpair_cacherows_lg2( "gl_paircache_rows_lg2", "10");		// 10 is minimum
+#if defined(__aarch64__) || defined(__arm__)
+ConVar	gl_shaderpair_cacheways_lg2( "gl_paircache_ways_lg2", "4");		// 4 is minimum on ARM (16-way)
+#else
 ConVar	gl_shaderpair_cacheways_lg2( "gl_paircache_ways_lg2", "5");		// 5 is minimum
+#endif
 ConVar	gl_shaderpair_cachelog( "gl_shaderpair_cachelog", "0" );
 
 static CCycleCount	gShaderCompileTime;
@@ -1283,8 +1287,13 @@ CGLMShaderPairCache::CGLMShaderPairCache( GLMContext *ctx  )
 	m_rowsMask = m_rows - 1;
 
 	m_waysLg2 = gl_shaderpair_cacheways_lg2.GetInt();
+#if defined(__aarch64__) || defined(__arm__)
+	if (m_waysLg2 < 4)
+		m_waysLg2 = 4;
+#else
 	if (m_waysLg2 < 5)
 		m_waysLg2 = 5;
+#endif
 	m_ways = 1<<m_waysLg2;
 
 	m_entryCount = m_rows * m_ways;
