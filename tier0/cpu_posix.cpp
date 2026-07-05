@@ -176,8 +176,14 @@ uint64 CalculateCPUFreq()
 
 	return period;
 #else
-	// ARM hard-coded frequency
-	return (uint64)2000000000;
+	// ARM: try /proc/cpuinfo if sysfs cpufreq is unavailable
+	{
+		uint64 proc_freq = GetCPUFreqFromPROC();
+		if ( proc_freq )
+			return proc_freq;
+	}
+	// Final fallback: assume a reasonable frequency
+	return (uint64)1500000000;
 #endif // if !ARM
 #endif // if APPLE
 }
