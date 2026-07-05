@@ -953,6 +953,26 @@ CAudioSource *S_LoadSound( CSfxTable *pSfx, channel_t *ch )
 				pSfx->m_bIsLateLoad = false;
 			}
 		}
+		else
+		{
+			// Non-X360 (PC/Linux): prevent synchronous disk I/O hitches during gameplay.
+			// Late-loaded sounds (not in reslists) cause 10-200ms stalls when the main
+			// thread blocks waiting for disk reads.  Skip them silently — the sound
+			// will play on the next encounter once it's cached.
+			if ( SND_IsInGame() && !g_pQueuedLoader->IsMapLoading() )
+			{
+				if ( !pSfx->m_bIsLateLoad )
+				{
+					DevWarning( "S_LoadSound: Late load '%s', skipping.\n", pSfx->getname() );
+					pSfx->m_bIsLateLoad = true;
+				}
+				return NULL;
+			}
+			else if ( pSfx->m_bIsLateLoad )
+			{
+				pSfx->m_bIsLateLoad = false;
+			}
+		}
 
 		double st = Plat_FloatTime();
 
