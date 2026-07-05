@@ -11,6 +11,7 @@
 #include "occlusionquerymgr.h"
 #include "imaterialsysteminternal.h"
 #include "imatrendercontextinternal.h"
+#include "tier0/threadtools.h"
 
 // NOTE: This must be the last file included!!!
 #include "tier0/memdbgon.h"
@@ -61,8 +62,17 @@ void COcclusionQueryMgr::FlushQuery( OcclusionQueryObjectHandle_t hOcclusionQuer
 	{
 		ShaderAPIOcclusionQuery_t hQuery = m_OcclusionQueryObjects[h].m_QueryHandle[nIndex];
 		
-		while ( OCCLUSION_QUERY_RESULT_PENDING == g_pShaderAPI->OcclusionQuery_GetNumPixelsRendered( hQuery, true ) )
-			continue;
+		// Bounded wait: spin for up to ~16ms (roughly one frame at 60fps),
+		// then give up.  The old infinite spin would hang the render thread
+		// forever if the GPU occlusion query never returned (e.g. tile resolve
+		// stall on Mali TBDR).  Yielding between attempts avoids burning CPU.
+		const int kMaxSpinAttempts = 256;
+		for ( int i = 0; i < kMaxSpinAttempts; i++ )
+		{
+			if ( OCCLUSION_QUERY_RESULT_PENDING != g_pShaderAPI->OcclusionQuery_GetNumPixelsRendered( hQuery, true ) )
+				break;
+			ThreadPause();
+		}
 	}
 }
 

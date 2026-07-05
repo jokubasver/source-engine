@@ -297,33 +297,41 @@ void	CGLMQuery::Complete( uint *result )
 	{
 		case EOcclusion:
 		{
-			if (m_nullQuery)
+		if (m_nullQuery)
+		{
+			m_done = true;
+			resultval = 0;		// we did say "null queries..."
+		}
+		else
+		{
+			// Avoid a full CPU/GPU sync when the result is already available.
+			// On a tile-based GPU like Mali G31, GL_QUERY_RESULT blocks until the
+			// queried tile has been resolved, which can stall the render thread
+			// for a long time.  Poll GL_QUERY_RESULT_AVAILABLE with a bounded
+			// timeout; if the GPU hasn't finished, treat the query as 0 pixels
+			// (occluded) rather than hanging the engine.
+			GLuint available = 0;
+			gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT_AVAILABLE, &available );
+			if ( !available )
 			{
-				m_done = true;
-				resultval = 0;		// we did say "null queries..."
+				// Spin briefly (up to ~256 iterations) giving the GPU time to finish.
+				for ( int spin = 0; spin < 256 && !available; ++spin )
+				{
+					gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT_AVAILABLE, &available );
+				}
+			}
+			if ( available )
+			{
+				gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT, &resultval);
 			}
 			else
 			{
-				// Avoid a full CPU/GPU sync when the result is already available.
-				// On a tile-based GPU like Mali G31, GL_QUERY_RESULT blocks until the
-				// queried tile has been resolved, which can stall the render thread
-				// for a long time.  Poll GL_QUERY_RESULT_AVAILABLE first; only fall
-				// back to the blocking GL_QUERY_RESULT if it is genuinely not ready.
-				GLuint available = 0;
-				gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT_AVAILABLE, &available );
-				if ( !available )
-				{
-					// Result not ready yet.  Yield the CPU a few times before
-					// committing to the blocking read, to give the GPU a chance to
-					// catch up without a hard stall.
-					for ( int spin = 0; spin < 4 && !available; ++spin )
-					{
-						gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT_AVAILABLE, &available );
-					}
-				}
-				gGL->glGetQueryObjectuiv( m_name, GL_QUERY_RESULT, &resultval);
-				m_done = true;
+				// GPU hasn't finished after our spin budget.  Return 0 (occluded)
+				// rather than blocking the render thread indefinitely.
+				resultval = 0;
 			}
+			m_done = true;
+		}
 		}
 		break;
 
