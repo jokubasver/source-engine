@@ -13,6 +13,7 @@
 #include "mathlib/vector.h"
 #if defined(__arm__) || defined(__aarch64__)
 #include "sse2neon.h"
+#include <arm_neon.h>
 #endif
 
 #include "sse.h"
@@ -217,11 +218,21 @@ float FASTCALL _SSE_VectorNormalize (Vector& vec)
 	// be much of a performance win, considering you will very likely miss 3 branch predicts in a row.
 	if ( v[0] || v[1] || v[2] )
 	{
-#if defined(__arm__) || defined(__aarch64__)
-		float rsqrt = _SSE_RSqrtAccurate( v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
-		r[0] = v[0] * rsqrt;
-		r[1] = v[1] * rsqrt;
-		r[2] = v[2] * rsqrt;
+#if defined(__aarch64__) || defined(__arm__)
+		float32x4_t v3 = vld1q_f32(v);
+		float32x2_t v2 = vget_low_f32(v3);
+		float32x2_t hi = vget_high_f32(v3);
+		float32x2_t sq = vmul_f32(v2, v2);
+		float32x2_t z2 = vmul_lane_f32(hi, hi, 0);
+		float32x2_t sum = vadd_f32(sq, z2);
+		float32x2_t total = vpadd_f32(sum, sum);
+		float32x4_t len4 = vcombine_f32(total, total);
+		float32x4_t rlen4 = vrsqrteq_f32(len4);
+		// Newton-Raphson refinement: y = y * (1.5 - 0.5 * a * y * y)
+		rlen4 = vmulq_f32(rlen4, vrsqrtsq_f32(vmulq_f32(len4, rlen4), rlen4));
+		float32x4_t norm = vmulq_f32(v3, rlen4);
+		vst1q_f32(r, norm);
+		radius = vgetq_lane_f32(vsqrtq_f32(len4), 0);
 #elif _WIN32
 	_asm
 		{
@@ -296,8 +307,17 @@ void FASTCALL _SSE_VectorNormalizeFast (Vector& vec)
 float _SSE_InvRSquared(const float* v)
 {
 	float	inv_r2 = 1.f;
-#if defined(__arm__) || defined(__aarch64__)
-	return _SSE_RSqrtAccurate( FLT_EPSILON + v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
+#if defined(__aarch64__) || defined(__arm__)
+	float32x4_t v4 = vld1q_f32(v);
+	float32x2_t v2 = vget_low_f32(v4);
+	float32x2_t hi = vget_high_f32(v4);
+	float32x2_t sq = vmul_f32(v2, v2);
+	float32x2_t z2 = vmul_lane_f32(hi, hi, 0);
+	float32x2_t sum = vadd_f32(sq, z2);
+	float32x2_t total = vpadd_f32(sum, sum);
+	float dot = vget_lane_f32(total, 0) + FLT_EPSILON;
+	dot = fmaxf(dot, 1.0f);
+	return 1.0f / dot;
 #elif _WIN32
 	_asm { // Intel SSE only routine
 		mov			eax, v
@@ -391,15 +411,33 @@ typedef __m64 v2si;   // vector of 2 int (mmx)
 
 void _SSE_SinCos(float x, float* s, float* c)
 {
-#if defined(__arm__) || defined(__aarch64__)
-#if defined( OSX )
-    __sincosf(x, s, c);
-#elif defined( POSIX )
-        sincosf(x, s, c);
+#if defined(__aarch64__) || defined(__arm__)
+	// NEON-optimized SinCos using Cephes minimax polynomial
+	const float invpio2 = 0.63661977236f; // 2/pi
+	const float pio2head = 1.5707963267948966f;
+	const float pio2tail = 6.07709993530e-11f;
+
+	float ax = fabsf(x);
+	float t = ax * invpio2;
+#if defined(__aarch64__)
+	int j = (int)vrndnq_f32(vdupq_n_f32(t))[0];
 #else
-	*s = sin( x );
-        *c = cos( x );
+	int j = (int)(t + 0.5f);
 #endif
+	float delta = ax - j * pio2head;
+	delta -= j * pio2tail;
+
+	float d2 = delta * delta;
+	float sinval = delta * (1.0f - d2 * (1.0f/6.0f  - d2 * (1.0f/120.0f - d2 * (1.0f/5040.0f))));
+	float cosval = 1.0f - d2 * (1.0f/2.0f  - d2 * (1.0f/24.0f  - d2 * (1.0f/720.0f)));
+
+	// Apply quadrant sign
+	int signsin = j & 1 ? -1 : 1;
+	int signcos = (j + 1) & 1 ? -1 : 1;
+	if (x < 0.0f) signsin = -signsin;
+
+	*s = sinval * signsin;
+	*c = cosval * signcos;
 #elif _WIN32
 	float t4, t8, t12;
 
@@ -607,8 +645,28 @@ void _SSE_SinCos(float x, float* s, float* c)
 
 float _SSE_cos( float x )
 {
-#if defined(__arm__) || defined(__aarch64__)
-	return cos(x);
+#if defined(__aarch64__) || defined(__arm__)
+	// NEON-optimized cos using Cephes minimax polynomial
+	const float invpio2 = 0.63661977236f; // 2/pi
+	const float pio2head = 1.5707963267948966f;
+	const float pio2tail = 6.07709993530e-11f;
+
+	float ax = fabsf(x) + 1.5707963267948966f; // offset by pi/2 for cos
+	float t = ax * invpio2;
+#if defined(__aarch64__)
+	int j = (int)vrndnq_f32(vdupq_n_f32(t))[0];
+#else
+	int j = (int)(t + 0.5f);
+#endif
+	float delta = ax - j * pio2head;
+	delta -= j * pio2tail;
+
+	float d2 = delta * delta;
+	float result = 1.0f - d2 * (1.0f/2.0f - d2 * (1.0f/24.0f - d2 * (1.0f/720.0f)));
+
+	// Apply quadrant sign
+	int sign = (j + 1) & 1 ? -1 : 1;
+	return result * sign;
 #elif _WIN32
 	float temp;
 	__asm
@@ -962,10 +1020,25 @@ void VectorTransformSSE(const float *in1, const matrix3x4_t& in2, float *out1)
 		movss [edx+8], xmm0;
 	}
 #elif POSIX
-	#warning "VectorTransformSSE C implementation only"
-		out1[0] = DotProduct(in1, in2[0]) + in2[0][3];
-		out1[1] = DotProduct(in1, in2[1]) + in2[1][3];
-		out1[2] = DotProduct(in1, in2[2]) + in2[2][3];
+#if defined(__aarch64__) || defined(__arm__)
+	float32x4_t in_v = vld1q_f32(in1);
+	for (int i = 0; i < 3; i++) {
+		float32x4_t row = vld1q_f32(in2[i]);
+		float32x2_t lo = vget_low_f32(in_v);
+		float32x2_t rlo = vget_low_f32(row);
+		float32x2_t hi = vget_high_f32(in_v);
+		float32x2_t rhi = vget_high_f32(row);
+		float32x2_t prod = vmul_f32(lo, rlo);
+		float32x2_t prod2 = vmul_f32(hi, rhi);
+		float32x2_t sum = vadd_f32(prod, prod2);
+		float32x2_t total = vpadd_f32(sum, sum);
+		out1[i] = vget_lane_f32(total, 0) + in2[i][3];
+	}
+#else
+	out1[0] = DotProduct(in1, in2[0]) + in2[0][3];
+	out1[1] = DotProduct(in1, in2[1]) + in2[1][3];
+	out1[2] = DotProduct(in1, in2[2]) + in2[2][3];
+#endif
 #else
 	#error "Not Implemented"
 #endif
