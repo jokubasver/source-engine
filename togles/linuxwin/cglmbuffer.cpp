@@ -643,6 +643,17 @@ void CGLMBuffer::FlushRange( uint offset, uint size )
 	{
 		// nothing to do
 	}
+	else if ( gGL->m_nDriverProvider == cGLDriverProviderARM )
+	{
+		// Mali TBDR: glFlushMappedBufferRange forces the GPU to drain its read
+		// pipeline before writing back mapped memory — a multi-millisecond stall
+		// on in-order ARM cores.  We already use GL_MAP_UNSYNCHRONIZED_BIT +
+		// orphan/discard pattern for dynamic buffers, so explicit flush is both
+		// unnecessary and harmful.  The unsynchronized map lets the CPU write
+		// immediately while the GPU continues processing old buffer contents in
+		// parallel; the next draw call will see fresh data via glBufferData(NULL)
+		// orphaning on discard or NOOVERWRITE semantics.
+	}
 	else
 	{
 #ifdef REPORT_LOCK_TIME

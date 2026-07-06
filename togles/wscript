@@ -55,6 +55,12 @@ def build(bld):
 		# an early tile resolve, wasting GPU time on an in-order pipeline.
 		defines += ['GL_SKIP_TOF_FLUSH']
 
+		# Disable GL_ARB_debug_output by default for ARM builds — the synchronous
+		# callback adds measurable per-frame overhead on in-order cores even when
+		# no errors occur.  The code also sets m_bHave_GL_ARB_debug_output=false
+		# at runtime, but this define provides a belt-and-suspenders guard.
+		defines += ['GL_DISABLE_DEBUG_OUTPUT_ON_ARM']
+
 	libs = gl_libs
 
 	if bld.env.DEST_OS == "darwin":

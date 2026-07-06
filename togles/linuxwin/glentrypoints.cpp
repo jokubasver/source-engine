@@ -385,6 +385,11 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 		// Do NOT force pseudo-buffers - client vertex arrays cause the Mali driver
 		// to copy vertex+index data on every draw call, tanking FPS.
 		m_bHave_GL_EXT_buffer_storage = false;
+
+		// Disable GL_ARB_debug_output by default on ARM/Mali — the synchronous
+		// callback adds measurable per-frame overhead on in-order cores even when
+		// no errors occur.  Re-enable with -gl_debug if needed for debugging.
+		m_bHave_GL_ARB_debug_output = false;
 	}
 	else if ( V_stristr( m_pGLDriverStrings[cGLVendorString], "imagination technologies" ) )
 		m_nDriverProvider = cGLDriverProviderImagination;

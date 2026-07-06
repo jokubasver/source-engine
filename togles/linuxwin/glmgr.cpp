@@ -2122,17 +2122,38 @@ void GLMContext::BeginFrame( void )
 	}
 
 	// scrub some critical shock absorbers
-	for( int i=0; i< 16; i++)
+	if ( m_lastKnownVertexAttribMask )
 	{
-		gGL->glDisableVertexAttribArray( i );						// enable GLSL attribute- this is just client state - will be turned back off
+		// Only disable attribs that were actually enabled in the previous frame.
+		// On Mali TBDR, each glDisableVertexAttribArray call has driver validation
+		// overhead on an in-order core; skipping 16 unconditional calls when no
+		// vertex attribs are bound saves measurable per-frame cost.
+		for( int i=0; i< 16; i++)
+		{
+			if ( m_lastKnownVertexAttribMask & ( 1 << i ) )
+			{
+				gGL->glDisableVertexAttribArray( i );
+			}
+		}
+		m_lastKnownVertexAttribMask = 0;
 	}
-	m_lastKnownVertexAttribMask = 0;
-	m_nNumSetVertexAttributes = 0;
+	else
+	{
+		// Fast path: nothing was enabled last frame, so no attribs need disabling.
+		m_nNumSetVertexAttributes = 0;
+	}
 	
 	//FIXME should we also zap the m_lastKnownAttribs array ? (worst case it just sets them all again on first batch)
 
-	BindBufferToCtx( kGLMVertexBuffer, NULL, true );
-	BindBufferToCtx( kGLMIndexBuffer, NULL, true );
+	if ( gGL->m_nDriverProvider != cGLDriverProviderARM )
+	{
+		// On ARM/Mali TBDR, glBindBuffer(0) per frame adds driver validation
+		// overhead on in-order cores. The scoreboard delta-tracking in FlushDrawStates
+		// will correctly bind the needed buffer for each draw call regardless of
+		// what was previously bound, so we can skip this reset entirely.
+		BindBufferToCtx( kGLMVertexBuffer, NULL, true );
+		BindBufferToCtx( kGLMIndexBuffer, NULL, true );
+	}
 
 	if (gl_flushpaircache.GetInt())
 	{
@@ -2516,6 +2537,15 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 		GLMDebugPrintf( "GLMContext::GLMContext: Debug output (gl_arb_debug_output) enabled!\n" );
 //#endif
+	}
+	else if ( gGL->m_nDriverProvider == cGLDriverProviderARM )
+	{
+		// Mali TBDR: Disable GL_ARB_debug_output by default on ARM.  The synchronous
+		// callback fires for every GL error/warning and forces a CPU-side context
+		// switch into the callback on an in-order core — measurable per-frame cost
+		// even when no errors actually occur.  Users can re-enable with -gl_debug if
+		// they need debugging; leave it off for production builds to avoid a slow-down.
+		gGL->m_bHave_GL_ARB_debug_output = false;
 	}
 
 
