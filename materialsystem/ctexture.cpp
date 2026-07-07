@@ -3182,7 +3182,7 @@ bool CTexture::ConvertToActualFormat( IVTFTexture *pVTFTexture )
 	ImageFormat fmt = m_ImageFormat;
 
 	ImageFormat dstFormat = ComputeActualFormat( pVTFTexture->Format() );
-	if (IsAndroid()) //cherrybtw TODO: add check for dxt support!
+#if defined(__aarch64__) || defined(__arm__) || defined(ANDROID)
 	{
 		switch (pVTFTexture->Format())
 			{
@@ -3199,6 +3199,7 @@ bool CTexture::ConvertToActualFormat( IVTFTexture *pVTFTexture )
 					break;
 			}
 	}
+#endif
 	if ( fmt != dstFormat )
 	{
 		tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s - conversion from (%d to %d)", __FUNCTION__, fmt, dstFormat );
