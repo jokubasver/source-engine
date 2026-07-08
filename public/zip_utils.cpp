@@ -11,6 +11,8 @@
 #ifdef IS_WINDOWS_PC
 #include <windows.h>
 #else
+#include <stdlib.h>
+#include <unistd.h>
 #define INVALID_HANDLE_VALUE (void *)0
 #define FILE_BEGIN SEEK_SET
 #define FILE_END SEEK_END
@@ -177,21 +179,22 @@ public:
 		char tempFileName[MAX_PATH];
 		if ( WritePath.IsEmpty() )
 		{
-			// use a safe name in the cwd
-			char *pBuffer = tmpnam( NULL );
-			if ( !pBuffer )
+			// use mkstemp for safe temp file creation
+			char templateName[] = "_XXXXXX.tmp";
+			int fd = mkstemp( templateName );
+			if ( fd < 0 )
 			{
 				return INVALID_HANDLE_VALUE;
 			}
-			if ( pBuffer[0] == '\\' )
+			V_snprintf( tempFileName, sizeof( tempFileName ), "%s", templateName );
+			FILE *hFile = fdopen( fd, "rw+" );
+			if ( !hFile )
 			{
-				pBuffer++;
+				close( fd );
+				return INVALID_HANDLE_VALUE;
 			}
-			if ( pBuffer[strlen( pBuffer )-1] == '.' )
-			{
-				pBuffer[strlen( pBuffer )-1] = '\0';
-			}
-			V_snprintf( tempFileName, sizeof( tempFileName ), "_%s.tmp", pBuffer );
+			FileName = tempFileName;
+			return (HANDLE)hFile;
 		}
 		else
 		{
@@ -199,14 +202,12 @@ public:
 			static int counter = 0;
 			time_t now = time( NULL );
 			struct tm *tm = localtime( &now );
-			sprintf( uniqueFilename, "%d_%d_%d_%d_%d.tmp", tm->tm_wday, tm->tm_hour, tm->tm_min, tm->tm_sec, ++counter );                                                \
+			sprintf( uniqueFilename, "%d_%d_%d_%d_%d.tmp", tm->tm_wday, tm->tm_hour, tm->tm_min, tm->tm_sec, ++counter );
 			V_ComposeFileName( WritePath.String(), uniqueFilename, tempFileName, sizeof( tempFileName ) );
+			FileName = tempFileName;
+			FILE *hFile = fopen( tempFileName, "rw+" );
+			return (HANDLE)hFile;
 		}
-
-		FileName = tempFileName;
-		FILE *hFile = fopen( tempFileName, "rw+" );
-		
-		return (HANDLE)hFile;
 	}
 
 	static unsigned int FileSeek( HANDLE hFile, unsigned int distance, DWORD MoveMethod )
