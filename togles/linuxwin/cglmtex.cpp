@@ -3269,22 +3269,28 @@ void convert_texture( GLenum &internalformat, GLsizei width, GLsizei height, GLe
 	else if ( format == GL_LUMINANCE_ALPHA )
     	internalformat = GL_LUMINANCE8_ALPHA8;
 
-	if( data && internalformat == GL_RGBA16 && !gGL->m_bHave_GL_EXT_texture_norm16 && gGL->m_bHave_GL_EXT_color_buffer_half_float )
+	if( internalformat == GL_RGBA16 && !gGL->m_bHave_GL_EXT_texture_norm16 && gGL->m_bHave_GL_EXT_color_buffer_half_float )
 	{
-		uint16_t *src = (uint16_t*)data;
-        uint16_t *dst = (uint16_t*)data;
+		// Rewrite the format to float even for the NULL-data (storage allocation)
+		// pass, so the texture storage is allocated as GL_RGBA16F consistently
+		// with the later pixel-data uploads (which convert in place below).
+		if ( data )
+		{
+			uint16_t *src = (uint16_t*)data;
+			uint16_t *dst = (uint16_t*)data;
 
-        const int count = width * height * 4;
-        for ( int i = 0; i < count; i++ )
-        {
-            float f = src[i] / 65535.0f;
-            float16 h;
-			h.SetFloat( f ) ;
-			dst[i] = h.GetBits();
-        }
+			const int count = width * height * 4;
+			for ( int i = 0; i < count; i++ )
+			{
+				float f = src[i] / 65535.0f;
+				float16 h;
+				h.SetFloat( f ) ;
+				dst[i] = h.GetBits();
+			}
+		}
 		internalformat = GL_RGBA16F;
-            format         = GL_RGBA;
-            type           = GL_HALF_FLOAT;
+		format         = GL_RGBA;
+		type           = GL_HALF_FLOAT;
 	}
 
 	if( type == GL_UNSIGNED_INT_8_8_8_8_REV )
