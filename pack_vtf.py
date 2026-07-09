@@ -45,7 +45,7 @@ def astc_mip_size(w, h):
     return astc_blocks(w, h) * 16
 
 
-def generate_mip_chain_from_tga(tga_path, astcenc_path, quality='-fast', block_size='4x4'):
+def generate_mip_chain_from_tga(tga_path, astcenc_path, is_srgb, quality='-fast', block_size='4x4'):
     from PIL import Image
 
     img = Image.open(tga_path)
@@ -56,6 +56,9 @@ def generate_mip_chain_from_tga(tga_path, astcenc_path, quality='-fast', block_s
     mip_astc_data = []
     level = 0
 
+    # Choose color profile flag based on original texture flags
+    color_profile = '-cs' if is_srgb else '-cl'
+
     while True:
         cur_w = max(1, w >> level)
         cur_h = max(1, h >> level)
@@ -65,9 +68,9 @@ def generate_mip_chain_from_tga(tga_path, astcenc_path, quality='-fast', block_s
         else:
             mip_img = img.resize((cur_w, cur_h), Image.LANCZOS)
 
-        # ASTC 4x4 requires dimensions that are multiples of 4 for clean encoding
-        pad_w = max(cur_w, 4)
-        pad_h = max(cur_h, 4)
+        # Pad canvas to a multiple of 4 to guarantee predictable astcenc block behavior
+        pad_w = ((cur_w + 3) // 4) * 4
+        pad_h = ((cur_h + 3) // 4) * 4
         padded_img = Image.new('RGBA', (pad_w, pad_h), (0, 0, 0, 0))
         padded_img.paste(mip_img, (0, 0))
 
@@ -77,7 +80,7 @@ def generate_mip_chain_from_tga(tga_path, astcenc_path, quality='-fast', block_s
         padded_img.save(tga_file)
 
         result = subprocess.run(
-            [astcenc_path, '-cl', tga_file, astc_file, block_size, quality, '-j', '1', '-silent'],
+            [astcenc_path, color_profile, tga_file, astc_file, block_size, quality, '-j', '1', '-silent'],
             capture_output=True, text=True
         )
         if result.returncode != 0:
@@ -88,7 +91,6 @@ def generate_mip_chain_from_tga(tga_path, astcenc_path, quality='-fast', block_s
             data = f.read()
         if len(data) < 16:
             print(f"  WARNING: ASTC output too small for mip {level}", file=sys.stderr)
-            astc_failed = True
             break
 
         mip_astc_data.append(data[16:])
@@ -267,6 +269,7 @@ def main():
         parser.error("Either --astc or --tga must be provided")
 
     orig = read_vtf_header(args.vtf)
+    is_srgb = bool(orig['flags'] & TEXTUREFLAGS_SRGB)
 
     if args.tga:
         if not args.astcenc:
@@ -276,7 +279,7 @@ def main():
             print(f"  ERROR: astcenc not found at {args.astcenc}", file=sys.stderr)
             sys.exit(1)
 
-        all_mip_data = generate_mip_chain_from_tga(args.tga, args.astcenc, args.quality)
+        all_mip_data = generate_mip_chain_from_tga(args.tga, args.astcenc, is_srgb, args.quality)
         num_mip_levels = len(all_mip_data)
 
         if num_mip_levels == 0 and args.rgba_fallback:
@@ -284,13 +287,11 @@ def main():
             all_mip_data = generate_rgba8888_mip_chain_from_tga(args.tga)
             num_mip_levels = len(all_mip_data)
 
-            full_chain = compute_num_mip_levels(orig['width'], orig['height'])
             vtf_mip_data = list(reversed(all_mip_data))
             total_data_size = sum(len(d) for d in vtf_mip_data)
-            flags = orig['flags'] | TEXTUREFLAGS_SRGB
             header = build_vtf_header(
                 width=orig['width'], height=orig['height'],
-                flags=flags, num_frames=orig['num_frames'],
+                flags=orig['flags'], num_frames=orig['num_frames'],
                 mip_count=num_mip_levels, img_format=IMAGE_FORMAT_RGBA8888,
             )
             with open(args.output, 'wb') as f:
@@ -318,14 +319,12 @@ def main():
         print(f"  WARNING: Only {num_mip_levels} mip levels, engine expects {full_chain}.", file=sys.stderr)
 
     vtf_mip_data = list(reversed(all_mip_data))
-
     total_data_size = sum(len(d) for d in vtf_mip_data)
 
-    flags = orig['flags'] | TEXTUREFLAGS_SRGB
     header = build_vtf_header(
-        width=orig['width'], height=orig['height'],
-        flags=flags, num_frames=orig['num_frames'],
-        mip_count=num_mip_levels,
+                width=orig['width'], height=orig['height'],
+                flags=orig['flags'], num_frames=orig['num_frames'],
+                mip_count=num_mip_levels,
     )
 
     with open(args.output, 'wb') as f:

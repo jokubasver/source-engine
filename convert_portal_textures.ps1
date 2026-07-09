@@ -146,10 +146,8 @@ Write-Step "Converting textures DXT -> ASTC 4x4"
 $vtfFiles = Get-ChildItem -Path $tmpDir -Filter "*.vtf" -Recurse
 $total = $vtfFiles.Count
 
-# Filter out already-converted files
-$todo = @()
 $alreadyDone = 0
-foreach ($vtf in $vtfFiles) {
+$todo = foreach ($vtf in $vtfFiles) {
     $rel = $vtf.FullName.Substring($tmpDir.Length + 1)
     $relDir = Split-Path $rel -Parent
     $nameNoExt = [System.IO.Path]::GetFileNameWithoutExtension($rel)
@@ -157,17 +155,18 @@ foreach ($vtf in $vtfFiles) {
     $outVtf = Join-Path $outSubdir "$nameNoExt.vtf"
     if (Test-Path -LiteralPath $outVtf) {
         $alreadyDone++
-        continue
+    } else {
+        $vtf
     }
-    $todo += $vtf
 }
 Write-OK "Already done: $alreadyDone | Remaining: $($todo.Count) / $total"
 
 $converted = 0; $skipped = 0; $tiny = 0; $failed = 0
+$failedFiles = [System.Collections.Generic.List[string]]::new()
 
 $isPwsh7 = $PSVersionTable.PSVersion.Major -ge 7
 
-if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
+if ($isPwsh7 -and $todo.Count -gt 1) {
     Write-Host "  Using $Threads parallel threads (PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Cyan
 
     $results = $todo | ForEach-Object -ThrottleLimit $Threads -Parallel {
@@ -182,7 +181,6 @@ if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
 
         New-Item -ItemType Directory -Path $outSubdir -Force | Out-Null
 
-        # Check dimensions
         $bytes = [System.IO.File]::ReadAllBytes($vtfPath)
         if ($bytes.Length -lt 20) { "tiny"; return }
         $w = [System.BitConverter]::ToUInt16($bytes, 16)
@@ -199,17 +197,15 @@ if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
             $proc = Start-Process -FilePath $using:Vtf2Tga -ArgumentList "-i `"$vtfPath`"" -Wait -NoNewWindow -PassThru
             $tgaCreated = [System.IO.Path]::ChangeExtension($vtfPath, ".tga")
             if (-not (Test-Path -LiteralPath $tgaCreated)) {
-                Write-Warning "vtf2tga failed for $rel (exit=$($proc.ExitCode)) - copying original DXT VTF"
                 Copy-Item -LiteralPath $vtfPath -Destination $outVtf
-                "fail_tga"; return
+                "fail_tga:$rel" ; return
             }
             Move-Item -LiteralPath $tgaCreated -Destination $tgaFile -Force
 
             $proc = Start-Process -FilePath $using:Python -ArgumentList "`"$using:PackVtf`" --vtf `"$vtfPath`" --tga `"$tgaFile`" --astcenc `"$using:AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
             if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
-                Write-Warning "pack_vtf failed for $rel (exit=$($proc.ExitCode)) - copying original DXT VTF"
                 Copy-Item -LiteralPath $vtfPath -Destination $outVtf
-                "fail_pack"; return
+                "fail_pack:$rel" ; return
             }
             "ok"
         }
@@ -219,11 +215,13 @@ if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
     }
 
     foreach ($r in $results) {
-        switch ($r) {
-            "ok"   { $converted++ }
-            "skip" { $skipped++ }
-            "tiny" { $tiny++ }
-            default { $failed++ }
+        if ($r -eq "ok") { $converted++ }
+        elseif ($r -eq "skip") { $skipped++ }
+        elseif ($r -eq "tiny") { $tiny++ }
+        # Fixed PowerShell syntax here
+        elseif ($r -like "fail_*") {
+            $failed++
+            $null = $failedFiles.Add($r.Substring($r.IndexOf(':') + 1))
         }
     }
 } else {
@@ -266,18 +264,18 @@ if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
             $proc = Start-Process -FilePath $Vtf2Tga -ArgumentList "-i `"$($vtf.FullName)`"" -Wait -NoNewWindow -PassThru
             $tgaCreated = [System.IO.Path]::ChangeExtension($vtf.FullName, ".tga")
             if (-not (Test-Path -LiteralPath $tgaCreated)) {
-                Write-Warning "vtf2tga failed for $rel (exit=$($proc.ExitCode)) - copying original DXT VTF"
                 Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
                 $failed++
+                $null = $failedFiles.Add($rel)
                 continue
             }
             Move-Item -LiteralPath $tgaCreated -Destination $tgaFile -Force
 
             $proc = Start-Process -FilePath $Python -ArgumentList "`"$PackVtf`" --vtf `"$($vtf.FullName)`" --tga `"$tgaFile`" --astcenc `"$AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
             if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
-                Write-Warning "pack_vtf failed for $rel (exit=$($proc.ExitCode)) - copying original DXT VTF"
                 Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
                 $failed++
+                $null = $failedFiles.Add($rel)
                 continue
             }
             $converted++
@@ -291,10 +289,15 @@ if ($isPwsh7 -and $Threads -gt 1 -and $todo.Count -gt 1) {
 Write-Progress -Activity "Converting textures" -Completed
 Write-Host ""
 Write-OK "Converted: $converted | Skipped: $skipped | Tiny: $tiny | Failed: $failed | Total: $total"
+
 if ($failed -gt 0) {
     Write-Host ""
     Write-Host "  WARNING: $failed textures failed conversion and were copied as original DXT." -ForegroundColor Yellow
-    Write-Host "  These will appear purple/black on Mali. Check warnings above for filenames." -ForegroundColor Yellow
+    Write-Host "  These will appear purple/black on Mali. Failed items listed below:" -ForegroundColor Yellow
+    foreach ($file in $failedFiles) {
+        Write-Host "    -> $file" -ForegroundColor Red
+    }
+    Write-Host ""
 }
 
 Write-Step "Copying non-texture game files"
