@@ -68,6 +68,7 @@ static bool g_UseGameDir = true;
 
 static bool g_bWarningsAsErrors = false;
 static bool g_bUsedAsLaunchableDLL = false;
+static bool g_bForceASTC4x4 = false;
 
 static char g_ForcedOutputDir[MAX_PATH];
 
@@ -743,6 +744,11 @@ static ImageFormat ComputeDesiredImageFormat( IVTFTexture *pTexture, VTexConfigI
 		targetFormat = IsPosix() ? IMAGE_FORMAT_BGR888 : IMAGE_FORMAT_DXT1; // No DXT compressor on Posix
 #endif
 	}
+	if ( g_bForceASTC4x4 && ( pTexture->Width() >= 4 ) && ( pTexture->Height() >= 4 ) && !( info.m_vtfProcOptions.flags0 & VtfProcessingOptions::OPT_NOCOMPRESS ) )
+	{
+		return IMAGE_FORMAT_ASTC4x4;
+	}
+
 	return targetFormat;
 } 
 
@@ -2278,6 +2284,7 @@ void Usage( void )
 		"-deducepath       : deduce path of sources by target file names\n"
 		"-quickconvert     : use with \"-dontusegamedir -quickconvert\" to upgrade old .vmt files\n"
 		"-crcvalidate      : validate .vmt against the sources\n"
+		"-astc             : force ASTC 4x4 compressed output (ARM Mali)\n"
 		"-crcforce         : generate a new .vmt even if sources crc matches\n"
 		"\teg: -vmtparam $ignorez 1 -vmtparam $translucent 1\n"
 		"Note that you can use wildcards and that you can also chain them\n"
@@ -2741,6 +2748,11 @@ int CVTex::VTex( int argc, char **argv )
 		else if( stricmp(argv[i], "-crcvalidate") == 0 )
 		{
 			i++;
+		}
+		else if ( stricmp( argv[i], "-astc" ) == 0 )
+		{
+			i++;
+			g_bForceASTC4x4 = true;
 		}
 		else if( stricmp(argv[i], "-crcforce") == 0 )
 		{

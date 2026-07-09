@@ -93,6 +93,8 @@ static const ImageFormatInfo_t g_ImageFormatInfo[] =
 
 	{ "DXT1_RUNTIME",				0, 0, 0, 0, 0, true, },			// IMAGE_FORMAT_DXT1_RUNTIME
 	{ "DXT5_RUNTIME",				0, 0, 0, 0, 8, true, },			// IMAGE_FORMAT_DXT5_RUNTIME
+
+	{ "ASTC4x4",					0, 0, 0, 0, 0, true },			// IMAGE_FORMAT_ASTC4x4
 };
 
 
@@ -160,10 +162,11 @@ int GetMemRequired( int width, int height, int depth, ImageFormat imageFormat, b
 
 			case IMAGE_FORMAT_DXT3:
 			case IMAGE_FORMAT_DXT5:
-			case IMAGE_FORMAT_DXT5_RUNTIME:
-			case IMAGE_FORMAT_ATI2N:
-				return numBlocks * 16;
-			}
+		case IMAGE_FORMAT_DXT5_RUNTIME:
+		case IMAGE_FORMAT_ATI2N:
+		case IMAGE_FORMAT_ASTC4x4:
+			return numBlocks * 16;
+		}
 
 			Assert( 0 );
 			return 0;
@@ -408,6 +411,11 @@ ImageFormat D3DFormatToImageFormat( D3DFORMAT format )
 	case D3DFMT_D24FS8:
 		return IMAGE_FORMAT_X360_DST24F;
 #endif
+
+	// ASTC format (for ToGL(ES) on ARM Mali)
+	case (D3DFORMAT)(MAKEFOURCC('A','S','T','4')): // 4 - 4x4 block
+		return IMAGE_FORMAT_ASTC4x4;
+
 	}
 
 	Assert( 0 );
@@ -519,6 +527,11 @@ D3DFORMAT ImageFormatToD3DFormat( ImageFormat format )
 		return D3DFMT_DXT1;
 	case IMAGE_FORMAT_DXT5_RUNTIME:
 		return D3DFMT_DXT5;
+
+	// ASTC format (for ToGL(ES) on ARM Mali)
+	case IMAGE_FORMAT_ASTC4x4:
+		return (D3DFORMAT)(MAKEFOURCC('A','S','T','4'));
+
 	}
 
 	Assert( 0 );

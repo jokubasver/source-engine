@@ -425,7 +425,8 @@ bool CVTFTexture::Init( int nWidth, int nHeight, int nDepth, ImageFormat fmt, in
 	}
 
 	if ( ( fmt == IMAGE_FORMAT_DXT1 ) || ( fmt == IMAGE_FORMAT_DXT3 ) || ( fmt == IMAGE_FORMAT_DXT5 ) ||
-		 ( fmt == IMAGE_FORMAT_DXT1_RUNTIME ) || ( fmt == IMAGE_FORMAT_DXT5_RUNTIME ) )
+		 ( fmt == IMAGE_FORMAT_DXT1_RUNTIME ) || ( fmt == IMAGE_FORMAT_DXT5_RUNTIME ) ||
+		 ( fmt == IMAGE_FORMAT_ASTC4x4 ) )
 	{
 		if ( !IsMultipleOf4( nWidth ) || !IsMultipleOf4( nHeight ) || !IsMultipleOf4( nDepth ) )
 		{
@@ -696,15 +697,17 @@ bool CVTFTexture::LoadImageData( CUtlBuffer &buf, const VTFFileHeader_t &header,
 	if (nSkipMipLevels > 0)
 	{
 		Assert( m_nMipCount > nSkipMipLevels );
-		if (header.numMipLevels < nSkipMipLevels)
+		if ( header.numMipLevels <= nSkipMipLevels )
 		{
-			// NOTE: This can only happen with older format .vtf files
-			Warning("Warning! Encountered old format VTF file; please rebuild it!\n");
+			Warning( "VTF file has fewer mip levels (%d) than requested skip (%d). Rebuild with all mip levels.\n",
+				(int)header.numMipLevels, nSkipMipLevels );
 			return false;
 		}
-
-		ComputeMipLevelDimensions( nSkipMipLevels, &m_nWidth, &m_nHeight, &m_nDepth );
-		m_nMipCount -= nSkipMipLevels;
+		else
+		{
+			ComputeMipLevelDimensions( nSkipMipLevels, &m_nWidth, &m_nHeight, &m_nDepth );
+			m_nMipCount -= nSkipMipLevels;
+		}
 	}
 
 	// read the texture image (including mipmaps if they are there and needed.)
@@ -745,7 +748,6 @@ retryCubemapLoad:
 		{
 			for (int iFace = 0; iFace < m_nFaceCount; ++iFace)
 			{
-				// printf("\n tex %p mip %i frame %i face %i  size %i  buf offset %i", this, iMip, iFrame, iFace, iMipSize, buf.TellGet() );
 				unsigned char *pMipBits = ImageData( iFrame, iFace, iMip );
 				buf.Get( pMipBits, iMipSize );
 			}
@@ -1086,12 +1088,11 @@ bool CVTFTexture::UnserializeEx( CUtlBuffer &buf, bool bHeaderOnly, int nForceFl
 	m_nFlags = header.flags;
 	m_nFrameCount = header.numFrames;
 
-
-	m_nFaceCount = (m_nFlags & TEXTUREFLAGS_ENVMAP) ? CUBEMAP_FACE_COUNT : 1;
-
 	// NOTE: We're going to store space for all mip levels, even if we don't 
 	// have data on disk for them. This is for backward compatibility
 	m_nMipCount = ComputeMipCount();
+
+	m_nFaceCount = (m_nFlags & TEXTUREFLAGS_ENVMAP) ? CUBEMAP_FACE_COUNT : 1;
 
 	m_nFinestMipmapLevel = 0;
 	m_nCoarsestMipmapLevel = m_nMipCount - 1;

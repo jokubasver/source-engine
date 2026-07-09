@@ -142,6 +142,10 @@ const GLMTexFormatDesc g_formatDescTable[] =
 	{ "_V8U8",			D3DFMT_V8U8,			GL_RGB8,							0,									GL_RG,					GL_BYTE,						1, 2 },
 	
 	{ "_R32F",			D3DFMT_R32F,			GL_R32F,							GL_R32F,							GL_RED,					GL_FLOAT,						1, 4 },
+
+	// ASTC compressed format for ARM Mali GPUs (4x4 block, 16 bytes/block)
+	{ "_ASTC4x4",		D3DFMT_ASTC4x4,			0x93B0/*GL_COMPRESSED_RGBA_ASTC_4x4_KHR*/,	0x93D0/*GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR*/,	GL_RGBA,		GL_UNSIGNED_BYTE,				4, 16 },
+
 //$ TODO: Need to merge bitmap changes over from Dota to get these formats.
 #if 0
 	{ "_A2R10G10B10",	D3DFMT_A2R10G10B10,		GL_RGB10_A2,						GL_RGB10_A2,						GL_RGBA,				GL_UNSIGNED_INT_10_10_10_2,		1, 4 },
@@ -482,7 +486,6 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 	
 	const GLMTexFormatDesc	*formatDesc = GetFormatDesc( key->m_texFormat );
 
-	//bool					compression = (formatDesc->m_chunkSize > 1) != 0;
 	if (!formatDesc)
 	{
 		GLMStop();	// bad news
@@ -3467,7 +3470,18 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 				Assert( writeWholeSlice );	//subimage not implemented in this path yet
 				// compressed path
 				// http://www.opengl.org/sdk/docs/man/xhtml/glCompressedTexImage2D
+				if ( !noDataWrite && sliceAddress )
+				{
 					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, slice->m_storageSize, sliceAddress );
+				}
+				else
+				{
+					// noDataWrite or no backing store - allocate temp zero buffer for compressed init
+					int zeroSize = slice->m_storageSize;
+					char *zeroBuf = (char *)calloc( 1, zeroSize );
+					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, zeroSize, zeroBuf );
+					free( zeroBuf );
+				}
 			}
 			else
 			{

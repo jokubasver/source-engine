@@ -1357,6 +1357,7 @@ HRESULT IDirect3D9::CheckDeviceFormat(UINT Adapter,D3DDEVTYPE DeviceType,D3DFORM
 						case D3DFMT_DXT1:
 						case D3DFMT_DXT3:
 						case D3DFMT_DXT5:
+						case D3DFMT_ASTC4x4:
 													legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
 													legalUsage	|=	D3DUSAGE_QUERY_SRGBREAD;
 													

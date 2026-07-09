@@ -3109,8 +3109,7 @@ void CMaterialSystem::CacheUsedMaterials( )
 	for (MaterialHandle_t i = FirstMaterial(); i != InvalidMaterial(); i = NextMaterial(i) )
 	{
 		IMaterialInternal* pMat = GetMaterialInternal(i);
-		Assert( pMat->GetReferenceCount() >= 0 );
-		if( pMat->GetReferenceCount() > 0 )
+		if( pMat && pMat->GetReferenceCount() > 0 )
 		{
 			pMat->Precache();
 		}
