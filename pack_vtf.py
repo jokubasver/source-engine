@@ -338,7 +338,7 @@ def build_cubemap_vtf(face_tga_paths, astcenc_path, orig, is_srgb, quality='-fas
     VTF cubemap data layout: for each mip level, all 6 faces are stored sequentially.
     Mip 0 face 0, mip 0 face 1, ..., mip 0 face 5, mip 1 face 0, ...
     """
-    face_names = ['rt', 'lt', 'up', 'dn', 'ft', 'bk']
+    face_names = ['rt', 'lf', 'bk', 'ft', 'up', 'dn']
     if len(face_tga_paths) != 6:
         raise ValueError(f"Cubemap requires exactly 6 face TGA files, got {len(face_tga_paths)}")
 
