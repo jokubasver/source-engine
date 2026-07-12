@@ -163,8 +163,12 @@ def compress_single_tga(tga_path, astcenc_path, is_srgb, quality):
 
 
 def extract_vtf_mip_tgas(vtf_path, vtf2tga_path):
-    """Run 'vtf2tga -mip' on a source VTF and return a list of per-mip TGA paths
-    ordered largest mip first (mip0, mip1, ...). Returns [] on failure."""
+    """Run 'vtf2tga -mip' on a source VTF and return mip TGAs grouped by frame.
+
+    vtf2tga -mip names outputs '<base>[NNN]_mip<M>.tga' where NNN is a 3-digit
+    frame index (omitted for single-frame textures). Returns a list indexed by
+    frame number; each element is a list of TGA paths ordered largest mip first
+    (mip0, mip1, ...). Returns [] on failure."""
     workdir = tempfile.mkdtemp(prefix='vtfmip_')
     shutil.copy(vtf_path, workdir)
     base = os.path.splitext(os.path.basename(vtf_path))[0]
@@ -175,14 +179,24 @@ def extract_vtf_mip_tgas(vtf_path, vtf2tga_path):
     if result.returncode != 0:
         print(f"  WARNING: vtf2tga -mip failed: {result.stderr.strip()}", file=sys.stderr)
         return []
-    files = []
+    frames = {}
     for fn in os.listdir(workdir):
-        if fn.startswith(base + '_mip') and fn.endswith('.tga'):
-            m = re.search(r'_mip(\d+)\.tga$', fn)
-            if m:
-                files.append((int(m.group(1)), os.path.join(workdir, fn)))
-    files.sort(key=lambda x: x[0])
-    return [p for _, p in files]
+        m = re.match(re.escape(base) + r'(?:(\d{3}))?_mip(\d+)\.tga$', fn)
+        if not m:
+            continue
+        frame = int(m.group(1)) if m.group(1) is not None else 0
+        mip = int(m.group(2))
+        frames.setdefault(frame, {})[mip] = os.path.join(workdir, fn)
+    if not frames:
+        return []
+    max_frame = max(frames.keys())
+    out = []
+    for f in range(max_frame + 1):
+        if f not in frames or not frames[f]:
+            print(f"  WARNING: vtf2tga -mip missing frame {f} for {vtf_path}", file=sys.stderr)
+            return []
+        out.append([frames[f][i] for i in sorted(frames[f].keys())])
+    return out
 
 
 def parse_ktx(ktx_path):
@@ -479,62 +493,103 @@ def main():
               f"{num_mip_levels} mips x 6 faces)", file=sys.stderr)
         return
 
-    # Auto-extract per-mip TGAs from the source VTF via vtf2tga -mip, then feed
-    # them through the --mip-tgas path. This preserves Valve's authored mip colors
-    # (re-downsampling a single full-res TGA darkens sparse-atlas textures at distance).
-    if args.vtf2tga and orig['img_format'] != IMAGE_FORMAT_ASTC4x4 and \
-       not args.astc and not args.tga and not args.mip_tgas and not args.cubemap:
+    # Per-mip path (multi-frame capable), driven by --mip-tgas or --vtf2tga.
+    # 'frames' is a list indexed by frame; each element is a list of mip TGA paths
+    # ordered largest-first (mip0, mip1, ...). A single-frame texture is simply
+    # frames=[ mip_list ]. VTF disk order is mip-outer (smallest->largest),
+    # frame-inner, so the data is interleaved accordingly.
+    frames = None
+    if args.mip_tgas:
+        frames = [list(args.mip_tgas)]
+    elif args.vtf2tga and orig['img_format'] != IMAGE_FORMAT_ASTC4x4 and \
+         not args.astc and not args.tga and not args.cubemap:
         if not args.astcenc:
             parser.error("--astcenc is required when using --vtf2tga")
-        extracted = extract_vtf_mip_tgas(args.vtf, args.vtf2tga)
-        if extracted:
-            args.mip_tgas = extracted
-        else:
+        frames = extract_vtf_mip_tgas(args.vtf, args.vtf2tga)
+        if not frames:
             print("  ERROR: vtf2tga -mip failed to produce mips for " + args.vtf, file=sys.stderr)
             sys.exit(1)
 
-    if args.mip_tgas:
+    if frames is not None:
         if not args.astcenc:
-            parser.error("--astcenc is required when using --mip-tgas")
+            parser.error("--astcenc is required when using --mip-tgas/--vtf2tga")
         if not os.path.isfile(args.astcenc):
             print(f"  ERROR: astcenc not found at {args.astcenc}", file=sys.stderr)
             sys.exit(1)
 
-        all_mip_data = []
-        failed = False
-        for t in args.mip_tgas:
-            if not os.path.isfile(t):
-                print(f"  ERROR: mip TGA not found: {t}", file=sys.stderr)
-                sys.exit(1)
-            body = compress_single_tga(t, args.astcenc, is_srgb, args.quality)
-            if body is None:
-                failed = True
-                break
-            all_mip_data.append(body)
-        num_mip_levels = len(all_mip_data)
+        num_frames = len(frames)
+        if orig['num_frames'] and num_frames != orig['num_frames']:
+            print(f"  WARNING: extracted {num_frames} frames but source VTF declares "
+                  f"{orig['num_frames']}", file=sys.stderr)
+        full_chain = compute_num_mip_levels(orig['width'], orig['height'])
 
-        if failed or num_mip_levels == 0:
+        # Compress each frame's mip chain individually.
+        frames_data = []
+        failed = False
+        for frame_mips in frames:
+            for t in frame_mips:
+                if not os.path.isfile(t):
+                    print(f"  ERROR: mip TGA not found: {t}", file=sys.stderr)
+                    sys.exit(1)
+            per_frame = []
+            for t in frame_mips:
+                body = compress_single_tga(t, args.astcenc, is_srgb, args.quality)
+                if body is None:
+                    failed = True
+                    break
+                per_frame.append(body)
+            if failed:
+                break
+            frames_data.append(per_frame)
+
+        if failed or not frames_data or not frames_data[0]:
             if args.rgba_fallback:
                 print(f"  ASTC mip-tga failed, falling back to RGBA8888", file=sys.stderr)
-                all_mip_data = [generate_rgba8888_from_tga(t) for t in args.mip_tgas]
-                num_mip_levels = len(all_mip_data)
-                vtf_mip_data = list(reversed(all_mip_data))
-                total_data_size = sum(len(d) for d in vtf_mip_data)
-                header = build_vtf_header(
-                    width=orig['width'], height=orig['height'],
-                    flags=output_flags, num_frames=orig['num_frames'],
-                    mip_count=num_mip_levels, img_format=IMAGE_FORMAT_RGBA8888,
-                )
-                with open(args.output, 'wb') as f:
-                    f.write(header)
-                    for level_data in vtf_mip_data:
-                        f.write(level_data)
-                print(f"  Wrote {args.output} (RGBA8888 fallback, {len(header) + total_data_size} bytes, {num_mip_levels} mips)", file=sys.stderr)
-                return
+                frames_data = [[generate_rgba8888_from_tga(t) for t in fm] for fm in frames]
+                img_format = IMAGE_FORMAT_RGBA8888
             else:
                 print(f"  ERROR: ASTC mip-tga conversion failed and no --rgba-fallback", file=sys.stderr)
                 sys.exit(1)
-    elif args.tga:
+        else:
+            img_format = IMAGE_FORMAT_ASTC4x4
+
+        # Pad/truncate each frame's mip chain to the full expected chain.
+        for fi in range(len(frames_data)):
+            chain = frames_data[fi]
+            if len(chain) < full_chain:
+                print(f"  WARNING: frame {fi} has {len(chain)} mip levels, expected "
+                      f"{full_chain}. Padding with smallest level.", file=sys.stderr)
+                while len(chain) < full_chain:
+                    chain.append(chain[-1])
+            elif len(chain) > full_chain:
+                print(f"  Truncating frame {fi} mip chain: {len(chain)} -> {full_chain}", file=sys.stderr)
+                chain = chain[:full_chain]
+            frames_data[fi] = chain
+
+        num_mip_levels = full_chain
+
+        # VTF disk order: for each mip (smallest->largest), for each frame.
+        vtf_mip_data = []
+        for mip in range(num_mip_levels - 1, -1, -1):
+            for fi in range(num_frames):
+                vtf_mip_data.append(frames_data[fi][mip])
+
+        total_data_size = sum(len(d) for d in vtf_mip_data)
+        header = build_vtf_header(
+            width=orig['width'], height=orig['height'],
+            flags=output_flags, num_frames=num_frames,
+            mip_count=num_mip_levels, img_format=img_format,
+        )
+        with open(args.output, 'wb') as f:
+            f.write(header)
+            for level_data in vtf_mip_data:
+                f.write(level_data)
+        print(f"  Wrote {args.output} ({'ASTC 4x4' if img_format == IMAGE_FORMAT_ASTC4x4 else 'RGBA8888'} "
+              f"multi-frame, {len(header) + total_data_size} bytes, {num_mip_levels} mips x "
+              f"{num_frames} frames)", file=sys.stderr)
+        return
+
+    if args.tga:
         if not args.astcenc:
             parser.error("--astcenc is required when using --tga")
 
