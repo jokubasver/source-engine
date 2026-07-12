@@ -1863,11 +1863,7 @@ void CMaterialSystem::ReadConfigFromConVars( MaterialSystem_Config_t *pConfig )
 	pConfig->m_fGammaTVExponent = mat_monitorgamma_tv_exp.GetFloat();
 	pConfig->m_bGammaTVEnabled = mat_monitorgamma_tv_enabled.GetBool();
 
-#ifdef TOGLES
-	pConfig->m_nAASamples = 0;
-#else
 	pConfig->m_nAASamples = mat_antialias.GetInt();
-#endif
 
 	pConfig->m_nAAQuality = mat_aaquality.GetInt();
 	pConfig->bShowDiffuse = mat_diffuse.GetInt() ? true : false;	
