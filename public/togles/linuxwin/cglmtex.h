@@ -313,7 +313,10 @@ struct GLMTexSamplingParams
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
-		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+		{
+			gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+		}
 
 		float flBorderColor[4] = { 0, 0, 0, 0 };
 		if ( m_borderColor )
@@ -373,7 +376,10 @@ struct GLMTexSamplingParams
 		{
 			gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 			gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
-			gGL->glTexParameteri( target, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+			if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+			{
+				gGL->glTexParameteri( target, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+			}
 		}
 
 		if ( m_borderColor != curState.m_borderColor )
@@ -433,7 +439,10 @@ struct GLMTexSamplingParams
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
 		gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 		gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
-		gGL->glTexParameteri( target, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+		{
+			gGL->glTexParameteri( target, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_packed.m_maxAniso );
+		}
 
 		float flBorderColor[4] = { 0, 0, 0, 0 };
 		if ( m_borderColor )

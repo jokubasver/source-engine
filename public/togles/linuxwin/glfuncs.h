@@ -235,6 +235,11 @@ GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
 
+// Anisotropic filtering. Optional on GLES2 (and absent on many mobile GPUs, e.g.
+// ARM Mali). When missing, the GL_TEXTURE_MAX_ANISOTROPY_EXT pname is invalid and
+// must not be passed to glTexParameteri/glSamplerParameteri (it raises GL_INVALID_ENUM).
+GL_EXT( GL_EXT_texture_filter_anisotropic, -1, -1 )
+
 // ASTC compressed texture support (ARM Mali and other GLES3.2+/desktop GPUs).
 // The engine advertises D3DFMT_ASTC4x4 to the materialsystem, but must only do so
 // when the GPU actually supports the KHR ASTC extensions - otherwise glCompressedTexImage2D

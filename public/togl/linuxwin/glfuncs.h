@@ -259,6 +259,7 @@ GL_FUNC_VOID(OpenGL,true,glBindVertexArray,(GLuint a),(a))
 #endif // !OSX
 
 GL_EXT(GL_EXT_texture_sRGB_decode,-1,-1)
+GL_EXT(GL_EXT_texture_filter_anisotropic,-1,-1)
 GL_FUNC_VOID(OpenGL,true,glPushClientAttrib,(GLbitfield a),(a))
 GL_FUNC_VOID(OpenGL,true,glPopClientAttrib,(void),())
 GL_EXT(GL_NVX_gpu_memory_info,-1,-1)

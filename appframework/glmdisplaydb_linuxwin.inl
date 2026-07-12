@@ -82,7 +82,10 @@ void GLMRendererInfo::Init( GLMRendererInfoFields *info )
 #endif
 
         GLint nMaxAniso = 0;
-        gGL->glGetIntegerv( GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &nMaxAniso );
+        if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+        {
+            gGL->glGetIntegerv( GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &nMaxAniso );
+        }
         m_info.m_maxAniso = clamp<int>( nMaxAniso, 0, 16 );
         
         // We don't currently used bindable uniforms, but I've been experimenting with them so I might as well check this in just in case they turn out to be useful.
