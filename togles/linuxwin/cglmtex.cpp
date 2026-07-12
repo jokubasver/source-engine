@@ -406,14 +406,23 @@ bool	GLMGenTexels( GLMGenTexelParams *params )
 			chunksize = 8;
 		break;
 		
-		// not done yet		
 		
+		case D3DFMT_ASTC4x4:
+		{
+			// ASTC 4x4 is a compressed format with no per-texel data to generate.
+			// The texture will be initialized via glCompressedTexImage2D from pre-generated data,
+			// so we just need to ensure chunksize matches the format table (16 bytes).
+			chunksize = 16;
+		}
+		break;
 
+		// not done yet
+		
 		//case D3DFMT_D16:				
 		//case D3DFMT_D24X8:			
 		//case D3DFMT_D24S8:			
-
-		//case D3DFMT_A16B16G16R16F:	
+	
+		//case D3DFMT_A16B16G16R16F:
 		
 		default:
 			return FALSE;	// fail
@@ -503,16 +512,21 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 		}
 	}
 
+	// Compressed formats (DXT/ASTC) need full mip chains - generate them automatically.
+	// Without this, ASTC textures only have 1 mip level and fade to black at distance.
+	if ( formatDesc->m_chunkSize > 1 )
+	{
+		key->m_texFlags |= kGLMTexMipped;
+	}
+
 	unsigned short index = m_layoutMap.Find( *key );
 	if (index != m_layoutMap.InvalidIndex())
 	{
 		// found it
-		//printf(" -hit- ");
 		GLMTexLayout *layout = m_layoutMap[ index ];
-		
+
 		// bump ref count
 		layout->m_refCount ++;
-		
 		return layout;
 	}
 	else

@@ -1357,11 +1357,23 @@ HRESULT IDirect3D9::CheckDeviceFormat(UINT Adapter,D3DDEVTYPE DeviceType,D3DFORM
 						case D3DFMT_DXT1:
 						case D3DFMT_DXT3:
 						case D3DFMT_DXT5:
-						case D3DFMT_ASTC4x4:
 													legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
 													legalUsage	|=	D3DUSAGE_QUERY_SRGBREAD;
 													
 													//open question: is auto gen of mipmaps is allowed or attempted on any DXT textures.
+						break;
+
+						case D3DFMT_ASTC4x4:
+													// Only advertise ASTC support when the GPU actually supports the
+													// KHR ASTC compressed-texture extensions. On GPUs lacking them,
+													// glCompressedTexImage2D with GL_COMPRESSED_RGBA_ASTC_4x4_KHR fails
+													// and the texture uploads black (fade to black at distance).
+													if ( gGL->m_bHave_GL_KHR_texture_compression_astc_ldr ||
+														 gGL->m_bHave_GL_KHR_texture_compression_astc_hdr )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+														legalUsage	|=	D3DUSAGE_QUERY_SRGBREAD;
+													}
 						break;
 
 						case D3DFMT_A8R8G8B8:		legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;

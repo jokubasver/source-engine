@@ -723,7 +723,7 @@ bool CVTFTexture::LoadImageData( CUtlBuffer &buf, const VTFFileHeader_t &header,
 	// NOTE: I checked in a bad version 4 where it stripped out the spheremap.
 	// To make it all work, need to check for that bad case.
 	bool bNoSkip = false;
-	if ( IsCubeMap() && ( header.version[0] == 7 ) && ( header.version[1] == 4 ) )
+	if ( IsCubeMap() && ( header.version[0] == 7 ) && ( header.version[1] >= 1 ) && ( header.version[1] <= 5 ) )
 	{
 		int nBytesRemaining = buf.TellMaxPut() - buf.TellGet();
 		int nFileSize = ComputeFaceSize( nSkipMipLevels ) * m_nFaceCount * m_nFrameCount;
@@ -761,7 +761,7 @@ retryCubemapLoad:
 	}
 
 	bool bOk = buf.IsValid();
-	if ( !bOk && IsCubeMap() && ( header.version[0] == 7 ) && ( header.version[1] <= 4 ) )
+	if ( !bOk && IsCubeMap() && ( header.version[0] == 7 ) && ( header.version[1] <= 5 ) )
 	{
 		if ( !bNoSkip )
 		{

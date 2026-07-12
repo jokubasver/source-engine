@@ -74,6 +74,39 @@ function Get-TextureFormat {
     return [System.BitConverter]::ToUInt32($bytes, $fmtOff)
 }
 
+function Get-VtfFlags {
+    param([string]$VtfPath)
+    $bytes = [System.IO.File]::ReadAllBytes($VtfPath)
+    if ($bytes.Length -lt 24) { return 0 }
+    return [System.BitConverter]::ToUInt32($bytes, 20)
+}
+
+$TEXTUREFLAGS_ENVMAP = 0x00004000
+
+function Test-VtfIsCubemap {
+    param([string]$VtfPath)
+    $flags = Get-VtfFlags $VtfPath
+    return ($flags -band $TEXTUREFLAGS_ENVMAP) -ne 0
+}
+
+$CUBEMAP_FACE_SUFFIXES = @("rt", "lt", "up", "dn", "ft", "bk")
+
+function Find-CubemapFaces {
+    param([string]$TgaBasePath)
+    $dir = Split-Path $TgaBasePath -Parent
+    $baseName = Split-Path $TgaBasePath -Leaf
+    $faces = @()
+    foreach ($suffix in $CUBEMAP_FACE_SUFFIXES) {
+        $facePath = Join-Path $dir "$baseName$suffix.tga"
+        if (Test-Path -LiteralPath $facePath) {
+            $faces += $facePath
+        } else {
+            return @()
+        }
+    }
+    return $faces
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -190,27 +223,62 @@ if ($isPwsh7 -and $todo.Count -gt 1) {
             "tiny"; return
         }
 
-        $tmpId = [guid]::NewGuid().ToString("N")
-        $tgaFile = Join-Path $env:TEMP "$tmpId.tga"
+        $isCubemap = ($bytes.Length -ge 24) -and (([System.BitConverter]::ToUInt32($bytes, 20) -band 0x00004000) -ne 0)
+        $tmpFaces = @()
+        $singleTgaFile = $null
 
         try {
             $proc = Start-Process -FilePath $using:Vtf2Tga -ArgumentList "-i `"$vtfPath`"" -Wait -NoNewWindow -PassThru
-            $tgaCreated = [System.IO.Path]::ChangeExtension($vtfPath, ".tga")
-            if (-not (Test-Path -LiteralPath $tgaCreated)) {
-                Copy-Item -LiteralPath $vtfPath -Destination $outVtf
-                "fail_tga:$rel" ; return
-            }
-            Move-Item -LiteralPath $tgaCreated -Destination $tgaFile -Force
 
-            $proc = Start-Process -FilePath $using:Python -ArgumentList "`"$using:PackVtf`" --vtf `"$vtfPath`" --tga `"$tgaFile`" --astcenc `"$using:AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
-            if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
-                Copy-Item -LiteralPath $vtfPath -Destination $outVtf
-                "fail_pack:$rel" ; return
+            if ($isCubemap) {
+                $tgaCreatedBase = [System.IO.Path]::ChangeExtension($vtfPath, ".tga")
+                $faceSuffixes = @("rt", "lt", "up", "dn", "ft", "bk")
+                $facePaths = @()
+                $allFound = $true
+                foreach ($suffix in $faceSuffixes) {
+                    $facePath = Join-Path (Split-Path $tgaCreatedBase -Parent) "$([System.IO.Path]::GetFileNameWithoutExtension($tgaCreatedBase))$suffix.tga"
+                    if (Test-Path -LiteralPath $facePath) {
+                        $facePaths += $facePath
+                    } else {
+                        $allFound = $false
+                        break
+                    }
+                }
+                if (-not $allFound) {
+                    Copy-Item -LiteralPath $vtfPath -Destination $outVtf
+                    "fail_tga:$rel" ; return
+                }
+
+                foreach ($fp in $facePaths) {
+                    $tmpId = [guid]::NewGuid().ToString("N")
+                    $tmpFace = Join-Path $env:TEMP "$tmpId.tga"
+                    Move-Item -LiteralPath $fp -Destination $tmpFace -Force
+                    $tmpFaces += $tmpFace
+                }
+
+                $faceArgs = ($tmpFaces | ForEach-Object { "`"$_`"" }) -join ' '
+                $proc = Start-Process -FilePath $using:Python -ArgumentList "`"$using:PackVtf`" --vtf `"$vtfPath`" --cubemap $faceArgs --astcenc `"$using:AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
+                    Copy-Item -LiteralPath $vtfPath -Destination $outVtf
+                    "fail_pack:$rel" ; return
+                }
+                "ok"
+            } else {
+                # pack_vtf.py extracts per-mip TGAs from the source VTF via vtf2tga -mip
+                # and compresses each, preserving authored mip colors (avoids fade-to-black
+                # on sparse-atlas textures). Pass --vtf2tga so it can do this itself.
+                $proc = Start-Process -FilePath $using:Python -ArgumentList "`"$using:PackVtf`" --vtf `"$vtfPath`" --vtf2tga `"$using:Vtf2Tga`" --astcenc `"$using:AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
+                    Copy-Item -LiteralPath $vtfPath -Destination $outVtf
+                    "fail_pack:$rel" ; return
+                }
+                "ok"
             }
-            "ok"
         }
         finally {
-            Remove-Item -LiteralPath $tgaFile -Force -ErrorAction SilentlyContinue
+            foreach ($tf in $tmpFaces) {
+                Remove-Item -LiteralPath $tf -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
@@ -257,31 +325,67 @@ if ($isPwsh7 -and $todo.Count -gt 1) {
             }
         }
 
-        $tmpId = [guid]::NewGuid().ToString("N")
-        $tgaFile = Join-Path $env:TEMP "$tmpId.tga"
+        $isCubemap = Test-VtfIsCubemap $vtf.FullName
+        $tmpFaces = @()
+        $singleTgaFile = $null
 
         try {
             $proc = Start-Process -FilePath $Vtf2Tga -ArgumentList "-i `"$($vtf.FullName)`"" -Wait -NoNewWindow -PassThru
-            $tgaCreated = [System.IO.Path]::ChangeExtension($vtf.FullName, ".tga")
-            if (-not (Test-Path -LiteralPath $tgaCreated)) {
-                Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
-                $failed++
-                $null = $failedFiles.Add($rel)
-                continue
-            }
-            Move-Item -LiteralPath $tgaCreated -Destination $tgaFile -Force
 
-            $proc = Start-Process -FilePath $Python -ArgumentList "`"$PackVtf`" --vtf `"$($vtf.FullName)`" --tga `"$tgaFile`" --astcenc `"$AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
-            if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
-                Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
-                $failed++
-                $null = $failedFiles.Add($rel)
-                continue
+            if ($isCubemap) {
+                $tgaCreatedBase = [System.IO.Path]::ChangeExtension($vtf.FullName, ".tga")
+                $faceSuffixes = @("rt", "lt", "up", "dn", "ft", "bk")
+                $facePaths = @()
+                $allFound = $true
+                foreach ($suffix in $faceSuffixes) {
+                    $facePath = Join-Path (Split-Path $tgaCreatedBase -Parent) "$([System.IO.Path]::GetFileNameWithoutExtension($tgaCreatedBase))$suffix.tga"
+                    if (Test-Path -LiteralPath $facePath) {
+                        $facePaths += $facePath
+                    } else {
+                        $allFound = $false
+                        break
+                    }
+                }
+                if (-not $allFound) {
+                    Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
+                    $failed++
+                    $null = $failedFiles.Add($rel)
+                    continue
+                }
+
+                foreach ($fp in $facePaths) {
+                    $tmpId2 = [guid]::NewGuid().ToString("N")
+                    $tmpFace = Join-Path $env:TEMP "$tmpId2.tga"
+                    Move-Item -LiteralPath $fp -Destination $tmpFace -Force
+                    $tmpFaces += $tmpFace
+                }
+
+                $faceArgs = ($tmpFaces | ForEach-Object { "`"$_`"" }) -join ' '
+                $proc = Start-Process -FilePath $Python -ArgumentList "`"$PackVtf`" --vtf `"$($vtf.FullName)`" --cubemap $faceArgs --astcenc `"$AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
+                    Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
+                    $failed++
+                    $null = $failedFiles.Add($rel)
+                    continue
+                }
+                $converted++
+            } else {
+                # pack_vtf.py extracts per-mip TGAs from the source VTF via vtf2tga -mip
+                # and compresses each, preserving authored mip colors.
+                $proc = Start-Process -FilePath $Python -ArgumentList "`"$PackVtf`" --vtf `"$($vtf.FullName)`" --vtf2tga `"$Vtf2Tga`" --astcenc `"$AstcencLocal`" --output `"$outVtf`" --rgba-fallback" -Wait -NoNewWindow -PassThru
+                if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $outVtf)) {
+                    Copy-Item -LiteralPath $vtf.FullName -Destination $outVtf
+                    $failed++
+                    $null = $failedFiles.Add($rel)
+                    continue
+                }
+                $converted++
             }
-            $converted++
         }
         finally {
-            Remove-Item -LiteralPath $tgaFile -Force -ErrorAction SilentlyContinue
+            foreach ($tf in $tmpFaces) {
+                Remove-Item -LiteralPath $tf -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }

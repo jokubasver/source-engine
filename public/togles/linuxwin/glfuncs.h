@@ -234,6 +234,13 @@ GL_EXT(GL_ANGLE_texture_compression_dxt5,-1,-1)
 GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
+
+// ASTC compressed texture support (ARM Mali and other GLES3.2+/desktop GPUs).
+// The engine advertises D3DFMT_ASTC4x4 to the materialsystem, but must only do so
+// when the GPU actually supports the KHR ASTC extensions - otherwise glCompressedTexImage2D
+// with GL_COMPRESSED_RGBA_ASTC_4x4_KHR fails and the texture uploads as black (fade to black at distance).
+GL_EXT( GL_KHR_texture_compression_astc_ldr, -1, -1 )
+GL_EXT( GL_KHR_texture_compression_astc_hdr, -1, -1 )
 GL_FUNC_VOID( GL_EXT_buffer_storage, false, glBufferStorageEXT, (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags), (target, size, data, flags) )
 
 // GL_ARM_shader_framebuffer_fetch / GL_EXT_shader_framebuffer_fetch

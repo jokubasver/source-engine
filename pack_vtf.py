@@ -1,13 +1,17 @@
 import struct
 import sys
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 
 IMAGE_FORMAT_ASTC4x4 = 41
 IMAGE_FORMAT_RGBA8888 = 0
 
-TEXTUREFLAGS_SRGB = 0x00040000
+TEXTUREFLAGS_SRGB = 0x00000040
+TEXTUREFLAGS_NORMAL = 0x00000080
+TEXTUREFLAGS_SSBUMP = 0x08000000
 
 
 def read_vtf_header(vtf_path):
@@ -133,6 +137,54 @@ def generate_rgba8888_mip_chain_from_tga(tga_path):
     return mip_data
 
 
+def generate_rgba8888_from_tga(tga_path):
+    """Return the raw RGBA8888 bytes of a single (already-mipped) TGA."""
+    from PIL import Image
+    return Image.open(tga_path).convert('RGBA').tobytes()
+
+
+def compress_single_tga(tga_path, astcenc_path, is_srgb, quality):
+    """Compress one already-sized TGA mip to ASTC, returning raw block bytes
+    (the 16-byte .astc container header stripped). Returns None on failure."""
+    color_profile = '-cs' if is_srgb else '-cl'
+    tmp = tempfile.mktemp(suffix='.astc')
+    result = subprocess.run(
+        [astcenc_path, color_profile, tga_path, tmp, '4x4', quality, '-j', '1', '-silent'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"  WARNING: astcenc failed for {tga_path}: {result.stderr.strip()}", file=sys.stderr)
+        return None
+    with open(tmp, 'rb') as f:
+        data = f.read()
+    if len(data) < 16:
+        return None
+    return data[16:]
+
+
+def extract_vtf_mip_tgas(vtf_path, vtf2tga_path):
+    """Run 'vtf2tga -mip' on a source VTF and return a list of per-mip TGA paths
+    ordered largest mip first (mip0, mip1, ...). Returns [] on failure."""
+    workdir = tempfile.mkdtemp(prefix='vtfmip_')
+    shutil.copy(vtf_path, workdir)
+    base = os.path.splitext(os.path.basename(vtf_path))[0]
+    result = subprocess.run(
+        [vtf2tga_path, '-i', os.path.join(workdir, os.path.basename(vtf_path)), '-mip'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"  WARNING: vtf2tga -mip failed: {result.stderr.strip()}", file=sys.stderr)
+        return []
+    files = []
+    for fn in os.listdir(workdir):
+        if fn.startswith(base + '_mip') and fn.endswith('.tga'):
+            m = re.search(r'_mip(\d+)\.tga$', fn)
+            if m:
+                files.append((int(m.group(1)), os.path.join(workdir, fn)))
+    files.sort(key=lambda x: x[0])
+    return [p for _, p in files]
+
+
 def parse_ktx(ktx_path):
     with open(ktx_path, 'rb') as f:
         data = f.read()
@@ -222,13 +274,23 @@ def compute_num_mip_levels(width, height):
     return n
 
 
+def truncate_mip_chain(mip_data, target_count):
+    """Truncate a mip chain (largest-first) to target_count levels."""
+    if len(mip_data) > target_count:
+        return mip_data[:target_count]
+    return mip_data
+
+
 def build_vtf_header(width, height, flags, num_frames, mip_count, img_format=IMAGE_FORMAT_ASTC4x4):
     num_resources = 1
 
+    # sizeof(VTFFileHeaderV7_3_t) = 80 bytes (72 bytes fields + 8 bytes alignas(16) padding)
+    HEADER_SIZE = 80
+
     buf = bytearray()
     buf += b'VTF\0'
-    buf += struct.pack('<II', 7, 3)
-    buf += struct.pack('<I', 80)
+    buf += struct.pack('<II', 7, 5)
+    buf += struct.pack('<I', HEADER_SIZE + num_resources * 8)
     buf += struct.pack('<HH', width, height)
     buf += struct.pack('<I', flags)
     buf += struct.pack('<HH', num_frames, 0)
@@ -243,13 +305,73 @@ def build_vtf_header(width, height, flags, num_frames, mip_count, img_format=IMA
     buf += struct.pack('<H', 1)
     buf += b'\0' * 3
     buf += struct.pack('<I', num_resources)
-    buf += b'\0' * 8
 
-    image_offset = len(buf) + num_resources * 8
+    # alignas(16) padding (bytes 72-79)
+    buf += b'\0' * (HEADER_SIZE - len(buf))
+
+    # Resource dictionary entries follow at offset HEADER_SIZE
+    # VTF_LEGACY_RSRC_IMAGE = 0x30
+    image_offset = HEADER_SIZE + num_resources * 8
     buf += struct.pack('<II', 0x30, image_offset)
 
     buf[12:16] = struct.pack('<I', image_offset)
     return bytes(buf)
+
+
+def build_cubemap_vtf(face_tga_paths, astcenc_path, orig, is_srgb, quality='-fast', block_size='4x4'):
+    """Build a cubemap VTF from 6 face TGA files.
+
+    VTF cubemap data layout: for each mip level, all 6 faces are stored sequentially.
+    Mip 0 face 0, mip 0 face 1, ..., mip 0 face 5, mip 1 face 0, ...
+    """
+    face_names = ['rt', 'lt', 'up', 'dn', 'ft', 'bk']
+    if len(face_tga_paths) != 6:
+        raise ValueError(f"Cubemap requires exactly 6 face TGA files, got {len(face_tga_paths)}")
+
+    # Generate mip chains for each face
+    face_mip_chains = []
+    for i, tga_path in enumerate(face_tga_paths):
+        mip_chain = generate_mip_chain_from_tga(tga_path, astcenc_path, is_srgb, quality, block_size)
+        if not mip_chain:
+            raise RuntimeError(f"ASTC conversion failed for face {face_names[i]}: {tga_path}")
+        face_mip_chains.append(mip_chain)
+
+    # All faces should have the same mip count; use the minimum.
+    num_mip_levels = min(len(chain) for chain in face_mip_chains)
+
+    full_chain = compute_num_mip_levels(orig['width'], orig['height'])
+
+    if num_mip_levels > full_chain:
+        print(f"  Truncating cubemap mip chain: {num_mip_levels} -> {full_chain} levels (full chain for {orig['width']}x{orig['height']})", file=sys.stderr)
+        for i in range(len(face_mip_chains)):
+            face_mip_chains[i] = face_mip_chains[i][:full_chain]
+        num_mip_levels = full_chain
+
+    if num_mip_levels < full_chain:
+        print(f"  WARNING: Cubemap has {num_mip_levels} mip levels, expected {full_chain}. Missing mips will be padded with the smallest level.", file=sys.stderr)
+        for i in range(len(face_mip_chains)):
+            while len(face_mip_chains[i]) < full_chain:
+                face_mip_chains[i].append(face_mip_chains[i][-1])
+            num_mip_levels = full_chain
+
+    # VTF stores mips in reverse order (smallest mip first), with all 6 faces per level.
+    # Layout: mipN_face0..face5, mip(N-1)_face0..face5, ..., mip0_face0..face5
+    vtf_mip_data = []
+    for mip_level in range(num_mip_levels - 1, -1, -1):
+        for face_idx in range(6):
+            vtf_mip_data.append(face_mip_chains[face_idx][mip_level])
+
+    total_data_size = sum(len(d) for d in vtf_mip_data)
+
+    output_flags = orig['flags'] | (TEXTUREFLAGS_SRGB if is_srgb else 0)
+
+    header = build_vtf_header(
+        width=orig['width'], height=orig['height'],
+        flags=output_flags, num_frames=orig['num_frames'],
+        mip_count=num_mip_levels, img_format=IMAGE_FORMAT_ASTC4x4,
+    )
+
+    return header, vtf_mip_data, num_mip_levels, total_data_size
 
 
 def main():
@@ -258,20 +380,161 @@ def main():
     parser.add_argument('--vtf', required=True, help='Original VTF file (for header reference)')
     parser.add_argument('--astc', help='ASTC or KTX file from astcenc (single level or multi-mip)')
     parser.add_argument('--tga', help='Source TGA image for mip chain generation')
-    parser.add_argument('--astcenc', help='Path to astcenc executable (required when using --tga)')
+    parser.add_argument('--mip-tgas', nargs='+', metavar='MIP_TGA',
+                        help='Pre-generated per-mip TGAs (mip0, mip1, ... largest to smallest) '
+                             'to compress individually. Preserves authored mip colors (use '
+                             'vtf2tga -mip). Avoids regenerating mips from a single full-res TGA, '
+                             'which darkens sparse-atlas textures at distance.')
+    parser.add_argument('--cubemap', nargs=6, metavar='FACE_TGA',
+                        help='6 cubemap face TGA files in order: rt lt up dn ft bk')
+    parser.add_argument('--astcenc', help='Path to astcenc executable (required when using --tga or --cubemap)')
+    parser.add_argument('--vtf2tga', help='Path to vtf2tga.exe. When set with --vtf (non-ASTC source), '
+                        'per-mip TGAs are extracted via "vtf2tga -mip" and each is compressed individually, '
+                        'preserving authored mip colors (fixes fade-to-black on sparse-atlas textures).')
     parser.add_argument('--quality', default='-fast', help='astcenc quality preset (default: -fast)')
     parser.add_argument('--output', required=True, help='Output VTF file path')
     parser.add_argument('--rgba-fallback', action='store_true',
                         help='If ASTC conversion fails, fall back to RGBA8888 instead of failing')
     args = parser.parse_args()
 
-    if not args.astc and not args.tga:
-        parser.error("Either --astc or --tga must be provided")
+    if not args.astc and not args.tga and not args.cubemap and not (args.vtf and args.vtf2tga):
+        parser.error("Either --astc, --tga, --cubemap, or --vtf with --vtf2tga must be provided")
 
     orig = read_vtf_header(args.vtf)
-    is_srgb = bool(orig['flags'] & TEXTUREFLAGS_SRGB)
 
-    if args.tga:
+    # Determine whether this texture contains sRGB color data.
+    # Explicit VTF flags take priority.
+    if orig['flags'] & TEXTUREFLAGS_NORMAL or orig['flags'] & TEXTUREFLAGS_SSBUMP:
+        is_srgb = False
+    elif orig['flags'] & TEXTUREFLAGS_SRGB:
+        is_srgb = True
+    else:
+        # No explicit flags — check filename for known non-color suffixes.
+        # Portal's shaders apply sRGB at load time for color textures
+        # via LoadTexture(..., TEXTUREFLAGS_SRGB), so we need to match
+        # that: non-color textures use LoadBumpMap or LoadTexture with 0 flags.
+        name = os.path.splitext(os.path.basename(args.vtf))[0].lower()
+        non_srgb_suffixes = ('_normal', '_exp', '_exponent', '_lightwarp',
+                             '_bump', '_height', '_phongexp', '_envmapmask',
+                             '_lw')
+        if any(name.endswith(s) for s in non_srgb_suffixes):
+            is_srgb = False
+        else:
+            # Default to sRGB — most Portal color textures fall here.
+            is_srgb = True
+
+    output_flags = orig['flags'] | (TEXTUREFLAGS_SRGB if is_srgb else 0)
+
+    if args.cubemap:
+        if not args.astcenc:
+            parser.error("--astcenc is required when using --cubemap")
+        if not os.path.isfile(args.astcenc):
+            print(f"  ERROR: astcenc not found at {args.astcenc}", file=sys.stderr)
+            sys.exit(1)
+        for p in args.cubemap:
+            if not os.path.isfile(p):
+                print(f"  ERROR: Face TGA not found: {p}", file=sys.stderr)
+                sys.exit(1)
+
+        try:
+            header, vtf_mip_data, num_mip_levels, total_data_size = build_cubemap_vtf(
+                args.cubemap, args.astcenc, orig, is_srgb, args.quality
+            )
+        except RuntimeError as e:
+            if args.rgba_fallback:
+                print(f"  ASTC cubemap failed ({e}), falling back to RGBA8888", file=sys.stderr)
+                face_mip_chains_rgba = [generate_rgba8888_mip_chain_from_tga(p) for p in args.cubemap]
+                num_mip_levels = min(len(c) for c in face_mip_chains_rgba)
+                full_chain = compute_num_mip_levels(orig['width'], orig['height'])
+                if num_mip_levels > full_chain:
+                    print(f"  Truncating cubemap mip chain (RGBA fallback): {num_mip_levels} -> {full_chain}", file=sys.stderr)
+                    for i in range(len(face_mip_chains_rgba)):
+                        face_mip_chains_rgba[i] = face_mip_chains_rgba[i][:full_chain]
+                    num_mip_levels = full_chain
+                if num_mip_levels < full_chain:
+                    print(f"  WARNING: RGBA fallback cubemap has {num_mip_levels} mip levels, expected {full_chain}. Padding.", file=sys.stderr)
+                    for i in range(len(face_mip_chains_rgba)):
+                        while len(face_mip_chains_rgba[i]) < full_chain:
+                            face_mip_chains_rgba[i].append(face_mip_chains_rgba[i][-1])
+                        num_mip_levels = full_chain
+                vtf_mip_data = []
+                for mip_level in range(num_mip_levels - 1, -1, -1):
+                    for face_idx in range(6):
+                        vtf_mip_data.append(face_mip_chains_rgba[face_idx][mip_level])
+                total_data_size = sum(len(d) for d in vtf_mip_data)
+                header = build_vtf_header(
+                    width=orig['width'], height=orig['height'],
+                    flags=output_flags, num_frames=orig['num_frames'],
+                    mip_count=num_mip_levels, img_format=IMAGE_FORMAT_RGBA8888,
+                )
+            else:
+                print(f"  ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        with open(args.output, 'wb') as f:
+            f.write(header)
+            for level_data in vtf_mip_data:
+                f.write(level_data)
+        print(f"  Wrote {args.output} (ASTC 4x4 cubemap, {len(header) + total_data_size} bytes, "
+              f"{num_mip_levels} mips x 6 faces)", file=sys.stderr)
+        return
+
+    # Auto-extract per-mip TGAs from the source VTF via vtf2tga -mip, then feed
+    # them through the --mip-tgas path. This preserves Valve's authored mip colors
+    # (re-downsampling a single full-res TGA darkens sparse-atlas textures at distance).
+    if args.vtf2tga and orig['img_format'] != IMAGE_FORMAT_ASTC4x4 and \
+       not args.astc and not args.tga and not args.mip_tgas and not args.cubemap:
+        if not args.astcenc:
+            parser.error("--astcenc is required when using --vtf2tga")
+        extracted = extract_vtf_mip_tgas(args.vtf, args.vtf2tga)
+        if extracted:
+            args.mip_tgas = extracted
+        else:
+            print("  ERROR: vtf2tga -mip failed to produce mips for " + args.vtf, file=sys.stderr)
+            sys.exit(1)
+
+    if args.mip_tgas:
+        if not args.astcenc:
+            parser.error("--astcenc is required when using --mip-tgas")
+        if not os.path.isfile(args.astcenc):
+            print(f"  ERROR: astcenc not found at {args.astcenc}", file=sys.stderr)
+            sys.exit(1)
+
+        all_mip_data = []
+        failed = False
+        for t in args.mip_tgas:
+            if not os.path.isfile(t):
+                print(f"  ERROR: mip TGA not found: {t}", file=sys.stderr)
+                sys.exit(1)
+            body = compress_single_tga(t, args.astcenc, is_srgb, args.quality)
+            if body is None:
+                failed = True
+                break
+            all_mip_data.append(body)
+        num_mip_levels = len(all_mip_data)
+
+        if failed or num_mip_levels == 0:
+            if args.rgba_fallback:
+                print(f"  ASTC mip-tga failed, falling back to RGBA8888", file=sys.stderr)
+                all_mip_data = [generate_rgba8888_from_tga(t) for t in args.mip_tgas]
+                num_mip_levels = len(all_mip_data)
+                vtf_mip_data = list(reversed(all_mip_data))
+                total_data_size = sum(len(d) for d in vtf_mip_data)
+                header = build_vtf_header(
+                    width=orig['width'], height=orig['height'],
+                    flags=output_flags, num_frames=orig['num_frames'],
+                    mip_count=num_mip_levels, img_format=IMAGE_FORMAT_RGBA8888,
+                )
+                with open(args.output, 'wb') as f:
+                    f.write(header)
+                    for level_data in vtf_mip_data:
+                        f.write(level_data)
+                print(f"  Wrote {args.output} (RGBA8888 fallback, {len(header) + total_data_size} bytes, {num_mip_levels} mips)", file=sys.stderr)
+                return
+            else:
+                print(f"  ERROR: ASTC mip-tga conversion failed and no --rgba-fallback", file=sys.stderr)
+                sys.exit(1)
+    elif args.tga:
         if not args.astcenc:
             parser.error("--astcenc is required when using --tga")
 
@@ -291,7 +554,7 @@ def main():
             total_data_size = sum(len(d) for d in vtf_mip_data)
             header = build_vtf_header(
                 width=orig['width'], height=orig['height'],
-                flags=orig['flags'], num_frames=orig['num_frames'],
+                flags=output_flags, num_frames=orig['num_frames'],
                 mip_count=num_mip_levels, img_format=IMAGE_FORMAT_RGBA8888,
             )
             with open(args.output, 'wb') as f:
@@ -313,17 +576,31 @@ def main():
         all_mip_data = parsed['mip_data']
         num_mip_levels = parsed['num_mip_levels']
 
+    target_mips = orig['mip_count'] if orig['mip_count'] > 0 else num_mip_levels
+
     full_chain = compute_num_mip_levels(orig['width'], orig['height'])
 
+    # The engine's ComputeMipCount() always computes the full mip chain from dimensions.
+    # If header.numMipLevels is less than that, LoadImageData skips reading data for
+    # the higher mips, leaving them uninitialized (zeros). WriteTexels then uploads
+    # those zeros to GL, causing "black at distance" rendering artifacts.
     if num_mip_levels < full_chain:
-        print(f"  WARNING: Only {num_mip_levels} mip levels, engine expects {full_chain}.", file=sys.stderr)
+        print(f"  WARNING: Only {num_mip_levels} mip levels, expected {full_chain}. Padding with smallest level.", file=sys.stderr)
+        while len(all_mip_data) < full_chain:
+            all_mip_data.append(all_mip_data[-1])
+        num_mip_levels = full_chain
+
+    if num_mip_levels > full_chain:
+        print(f"  Truncating mip chain: {num_mip_levels} -> {full_chain} levels (full chain for {orig['width']}x{orig['height']})", file=sys.stderr)
+        all_mip_data = all_mip_data[:full_chain]
+        num_mip_levels = full_chain
 
     vtf_mip_data = list(reversed(all_mip_data))
     total_data_size = sum(len(d) for d in vtf_mip_data)
 
     header = build_vtf_header(
                 width=orig['width'], height=orig['height'],
-                flags=orig['flags'], num_frames=orig['num_frames'],
+                flags=output_flags, num_frames=orig['num_frames'],
                 mip_count=num_mip_levels,
     )
 
