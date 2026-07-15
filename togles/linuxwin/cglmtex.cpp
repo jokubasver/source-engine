@@ -807,33 +807,67 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	// if tex is MSAA renderable, make an RBO, else zero the RBO name and dirty bit
 	if (layout->m_key.m_texFlags & kGLMTexMultisampled)
 	{
-		gGL->glGenRenderbuffers( 1, &m_rboName );
-				
-		// so we have enough info to go ahead and bind the RBO and put storage on it?
-		// try it.
-		gGL->glBindRenderbuffer( GL_RENDERBUFFER, m_rboName );
+		// GL_EXT_multisampled_render_to_texture lets us render directly to a
+		// regular texture with multisampling, avoiding the RBO + explicit resolve.
+		// It only supports COLOR_ATTACHMENT0, so depth/stencil still need an RBO.
+		bool bUseRenderToTextureEXT = gGL->m_bHave_GL_EXT_multisampled_render_to_texture
+			&& !(layout->m_key.m_texFlags & (kGLMTexIsDepth|kGLMTexIsStencil));
 
-		// quietly clamp if sample count exceeds known limit for the device
-		int sampleCount = layout->m_key.m_texSamples;
-		
-		if (sampleCount > ctx->Caps().m_maxSamples)
+		if (bUseRenderToTextureEXT)
 		{
-			sampleCount = ctx->Caps().m_maxSamples;	// clamp
-		}
-		
-		GLenum	msaaFormat = (layout->m_key.m_texFlags & kGLMTexSRGB) ? layout->m_format->m_glIntFormatSRGB : layout->m_format->m_glIntFormat;
-		gGL->glRenderbufferStorageMultisample(	GL_RENDERBUFFER,
-												sampleCount,	// not "layout->m_key.m_texSamples"
-												msaaFormat,
-												layout->m_key.m_xSize,
-												layout->m_key.m_ySize );	
+			m_rboName = 0;
 
-		if (gl_texmsaalog.GetInt())
+			if (gl_texmsaalog.GetInt())
+			{
+				printf( "\n == MSAA Tex %p %s : using EXT_multisampled_render_to_texture (%d samples)", this, m_debugLabel?m_debugLabel:"", layout->m_key.m_texSamples );
+			}
+		}
+		else
 		{
-			printf( "\n == MSAA Tex %p %s : MSAA RBO is intformat %s (%x)", this, m_debugLabel?m_debugLabel:"", GLMDecode( eGL_ENUM, msaaFormat ), msaaFormat );
-		}
+			gGL->glGenRenderbuffers( 1, &m_rboName );
+					
+			// so we have enough info to go ahead and bind the RBO and put storage on it?
+			// try it.
+			gGL->glBindRenderbuffer( GL_RENDERBUFFER, m_rboName );
 
-		gGL->glBindRenderbuffer( GL_RENDERBUFFER, 0 );
+			// quietly clamp if sample count exceeds known limit for the device
+			int sampleCount = layout->m_key.m_texSamples;
+			
+			if (sampleCount > ctx->Caps().m_maxSamples)
+			{
+				sampleCount = ctx->Caps().m_maxSamples;	// clamp
+			}
+			
+			GLenum	msaaFormat = (layout->m_key.m_texFlags & kGLMTexSRGB) ? layout->m_format->m_glIntFormatSRGB : layout->m_format->m_glIntFormat;
+
+			// When GL_EXT_multisampled_render_to_texture is available, all renderbuffers
+			// attached to the same FBO as a texture using FramebufferTexture2DMultisampleEXT
+			// must use RenderbufferStorageMultisampleEXT (not the core function), otherwise
+			// the FBO will be incomplete (GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE_EXT).
+			if ( gGL->m_bHave_GL_EXT_multisampled_render_to_texture )
+			{
+				gGL->glRenderbufferStorageMultisampleEXT(	GL_RENDERBUFFER,
+															sampleCount,
+															msaaFormat,
+															layout->m_key.m_xSize,
+															layout->m_key.m_ySize );	
+			}
+			else
+			{
+				gGL->glRenderbufferStorageMultisample(	GL_RENDERBUFFER,
+														sampleCount,
+														msaaFormat,
+														layout->m_key.m_xSize,
+														layout->m_key.m_ySize );	
+			}
+
+			if (gl_texmsaalog.GetInt())
+			{
+				printf( "\n == MSAA Tex %p %s : MSAA RBO is intformat %s (%x)", this, m_debugLabel?m_debugLabel:"", GLMDecode( eGL_ENUM, msaaFormat ), msaaFormat );
+			}
+
+			gGL->glBindRenderbuffer( GL_RENDERBUFFER, 0 );
+		}
 	}
 	else
 	{

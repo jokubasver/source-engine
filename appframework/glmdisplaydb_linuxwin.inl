@@ -321,6 +321,13 @@ void GLMDisplayDB::PopulateRenderers( void )
         fields.m_maxSamples = clamp<int>( nMaxMultiSamples, 0, 8 );
         DebugPrintf( "GL_MAX_SAMPLES_EXT: %i\n", nMaxMultiSamples );
 
+        // Mali G31 (and other Mali GPUs) have limited tile buffer; cap to 4x to avoid tile overflow.
+        if ( gGL->m_nDriverProvider == cGLDriverProviderARM )
+        {
+                fields.m_maxSamples = MIN( fields.m_maxSamples, 4 );
+                DebugPrintf( "ARM GPU detected, capping max MSAA samples to %i\n", fields.m_maxSamples );
+        }
+
         // We only have one GLMRendererInfo on Linux, unlike Mac OS X. Whatever libGL.so wants to do, we go with it.
         m_renderer.Init( &fields );
 
