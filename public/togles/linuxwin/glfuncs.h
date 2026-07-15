@@ -224,6 +224,8 @@ GL_EXT(GL_QCOM_alpha_test,-1,-1)
 
 
 GL_EXT(GL_EXT_texture_sRGB_decode,-1,-1)
+GL_EXT(GL_EXT_discard_framebuffer,-1,-1)
+GL_FUNC_VOID(GL_EXT_discard_framebuffer,false,glDiscardFramebufferEXT,(GLenum a,GLsizei b,const GLenum *c),(a,b,c))
 GL_EXT(GL_EXT_multisampled_render_to_texture,-1,-1)
 GL_FUNC_VOID(GL_EXT_multisampled_render_to_texture,false,glFramebufferTexture2DMultisampleEXT,(GLenum a,GLenum b,GLenum c,GLuint d,GLint e,GLsizei f),(a,b,c,d,e,f))
 GL_FUNC_VOID(GL_EXT_multisampled_render_to_texture,false,glRenderbufferStorageMultisampleEXT,(GLenum a,GLsizei b,GLenum c,GLsizei d,GLsizei e),(a,b,c,d,e))

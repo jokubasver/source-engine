@@ -1591,7 +1591,31 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 								0, 0,	tex->m_layout->m_key.m_xSize, tex->m_layout->m_key.m_ySize,
 								blitMask, GL_NEAREST );
 			// or should it be GL_LINEAR?  does it matter ?
-			
+
+		// After resolve, the source MSAA buffer (RBO) is no longer needed.
+		// Discard it so tile-based renderers skip the tile-buffer store.
+		if ( gGL->m_bHave_GL_EXT_discard_framebuffer )
+		{
+			GLenum discardList[3];
+			int numDiscard = 0;
+			if ( blitMask & GL_COLOR_BUFFER_BIT )
+			{
+				discardList[numDiscard++] = GL_COLOR_ATTACHMENT0;
+			}
+			if ( blitMask & GL_DEPTH_BUFFER_BIT )
+			{
+				discardList[numDiscard++] = GL_DEPTH_ATTACHMENT;
+			}
+			if ( blitMask & GL_STENCIL_BUFFER_BIT )
+			{
+				discardList[numDiscard++] = GL_STENCIL_ATTACHMENT;
+			}
+			if ( numDiscard > 0 )
+			{
+				gGL->glDiscardFramebufferEXT( GL_READ_FRAMEBUFFER, numDiscard, discardList );
+			}
+		}
+
 		//-----------------------------------------------------------------------------------
 		// cleanup
 		//-----------------------------------------------------------------------------------
@@ -2044,6 +2068,26 @@ void GLMContext::Clear( bool color, unsigned long colorValue, bool depth, float 
 			m_ScissorBox.Write( &scissorBoxNew );
 		}
 
+		// GL_EXT_discard_framebuffer: before clearing, discard buffers we're
+		// about to overwrite so tile-based renderers skip the tile-buffer load
+		if ( gGL->m_bHave_GL_EXT_discard_framebuffer && !subrect )
+		{
+			GLenum discardAttachments[3];
+			int numDiscard = 0;
+			if ( mask & GL_DEPTH_BUFFER_BIT )
+			{
+				discardAttachments[numDiscard++] = m_drawingFBO ? GL_DEPTH_ATTACHMENT : GL_DEPTH_EXT;
+			}
+			if ( mask & GL_STENCIL_BUFFER_BIT )
+			{
+				discardAttachments[numDiscard++] = m_drawingFBO ? GL_STENCIL_ATTACHMENT : GL_STENCIL_EXT;
+			}
+			if ( numDiscard > 0 )
+			{
+				gGL->glDiscardFramebufferEXT( GL_FRAMEBUFFER, numDiscard, discardAttachments );
+			}
+		}
+
 		gGL->glClear( mask );
 
 		if (subrect)
@@ -2102,6 +2146,14 @@ static	ConVar gl_flushpaircache ("gl_flushpaircache", "0");
 static	ConVar gl_paircachestats ("gl_paircachestats", "0");
 static	ConVar gl_mtglflush_at_tof ("gl_mtglflush_at_tof", "0");
 static	ConVar gl_texlayoutstats ("gl_texlayoutstats", "0" );
+
+static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
+{
+	2 * 1024 * 1024,	// kGLMVertexBuffer
+	1 * 1024 * 1024,	// kGLMIndexBuffer
+	0,					// kGLMUniformBuffer
+	0,					// kGLMPixelBuffer
+};
 
 void GLMContext::BeginFrame( void )
 {
@@ -2202,6 +2254,36 @@ void GLMContext::EndFrame( void )
 		DebugHook( &info );
 	} while (info.m_loop);
 #endif
+
+	AdvancePersistentBuffer();
+}
+
+void GLMContext::AdvancePersistentBuffer( void )
+{
+	if ( !gGL->m_bHave_GL_EXT_buffer_storage )
+		return;
+
+	for ( int lpType = 0; lpType < kGLMNumBufferTypes; ++lpType )
+	{
+		if ( gPersistentBufferSize[lpType] == 0 )
+			continue;
+
+		// Insert fence on the buffer we just finished writing to this frame
+		m_persistentBuffer[m_nCurPersistentBuffer][lpType].InsertFence();
+	}
+
+	// Advance to next buffer in the ring
+	m_nCurPersistentBuffer = ( m_nCurPersistentBuffer + 1 ) % cNumPersistentBuffers;
+
+	for ( int lpType = 0; lpType < kGLMNumBufferTypes; ++lpType )
+	{
+		if ( gPersistentBufferSize[lpType] == 0 )
+			continue;
+
+		// Block until the GPU is done with the buffer we're about to reuse,
+		// and reset its offset to 0 for fresh appending next frame
+		m_persistentBuffer[m_nCurPersistentBuffer][lpType].BlockUntilNotBusy();
+	}
 }
 
 //===============================================================================
@@ -2376,14 +2458,6 @@ bool GLMContext::SetDisplayParams( GLMDisplayParams *params )
 
 
 ConVar gl_can_query_fast("gl_can_query_fast", "0");
-
-static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
-{
-	2 * 1024 * 1024,	// kGLMVertexBuffer
-	1 * 1024 * 1024,	// kGLMIndexBuffer
-	0,					// kGLMUniformBuffer
-	0,					// kGLMPixelBuffer
-};
 
 GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 {

@@ -258,6 +258,24 @@ void	CGLMFBO::TexDetach( EGLMFBOAttachment attachIndex, GLenum fboBindPoint )
 					// MSAA path with RBO - detach the RBO, not the texture
 					// (is this the right time to resolve?  probably better to wait until someone tries to sample the texture)
 
+					// Discard depth/stencil before detaching — tile-based renderers
+					// can skip writing tile data back to memory.
+					if ( gGL->m_bHave_GL_EXT_discard_framebuffer && ( attachIndexGL == GL_DEPTH_ATTACHMENT || attachIndexGL == GL_DEPTH_STENCIL_ATTACHMENT ) )
+					{
+						GLenum discardList[2];
+						int numDiscard = 0;
+						if ( attachIndexGL == GL_DEPTH_STENCIL_ATTACHMENT )
+						{
+							discardList[numDiscard++] = GL_DEPTH_ATTACHMENT;
+							discardList[numDiscard++] = GL_STENCIL_ATTACHMENT;
+						}
+						else
+						{
+							discardList[numDiscard++] = attachIndexGL;
+						}
+						gGL->glDiscardFramebufferEXT( GL_FRAMEBUFFER, numDiscard, discardList );
+					}
+
 					gGL->glBindRenderbuffer( GL_RENDERBUFFER, 0 );
 						
 					if (attachIndexGL==GL_DEPTH_STENCIL_ATTACHMENT)

@@ -719,6 +719,11 @@ FORCEINLINE void GLContextGetDefault( GLBlendColor_t *dst )
 #define GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING	0x8210
 #define GL_COLOR_ATTACHMENT0						0x8CE0
 
+// GL_EXT_discard_framebuffer tokens (for default framebuffer attachments)
+#define GL_COLOR_EXT								0x1800
+#define GL_DEPTH_EXT								0x1801
+#define GL_STENCIL_EXT								0x1802
+
 FORCEINLINE void GLContextSet( GLBlendEnableSRGB_t *src )
 {
 #if GLMDEBUG
@@ -1467,6 +1472,7 @@ class GLMContext
 		// debug stuff
 		void	BeginFrame( void );
 		void	EndFrame( void );
+		void	AdvancePersistentBuffer( void );
 		
 		// new interactive debug stuff
 #if GLMDEBUG
