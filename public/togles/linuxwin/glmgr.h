@@ -2292,7 +2292,7 @@ FORCEINLINE void GLMContext::SetSamplerMipMapLODBias( int sampler, DWORD Value )
 FORCEINLINE void GLMContext::SetSamplerMaxMipLevel( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) );
-	m_samplers[sampler].m_samp.m_packed.m_minLOD = Value;
+	m_samplers[sampler].m_samp.m_packed.m_maxLOD = Value;
 }
 
 FORCEINLINE void GLMContext::SetSamplerMaxAnisotropy( int sampler, DWORD Value )

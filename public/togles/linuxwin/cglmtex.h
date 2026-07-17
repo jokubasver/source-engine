@@ -257,6 +257,7 @@ struct GLMTexPackedSamplingParams
 	uint32 m_mipFilter		: GLM_PACKED_SAMPLER_PARAMS_MIP_FILTER_BITS;
 
 	uint32 m_minLOD			: GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS;
+	uint32 m_maxLOD			: GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS;
 	uint32 m_maxAniso		: GLM_PACKED_SAMPLER_PARAMS_MAX_ANISO_BITS;
 	uint32 m_compareMode	: GLM_PACKED_SAMPLER_PARAMS_COMPARE_MODE_BITS;
 	uint32 m_srgb			: GLM_PACKED_SAMPLER_PARAMS_SRGB_BITS;
@@ -328,9 +329,14 @@ struct GLMTexSamplingParams
 		}
 		gGL->glSamplerParameterfv( nSamplerObject, GL_TEXTURE_BORDER_COLOR, flBorderColor ); // <-- this crashes ATI's driver, remark it out
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_LOD, m_packed.m_minLOD );
-//		gGL->glSamplerParameterfv( nSamplerObject, GL_TEXTURE_LOD_BIAS, &m_lodBias );
+		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
+		{
+			float effectiveLodBias = m_lodBias;
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
+				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
+			gGL->glSamplerParameterf( nSamplerObject, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
+		}
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_COMPARE_MODE_ARB, m_packed.m_compareMode ? GL_COMPARE_R_TO_TEXTURE_ARB : GL_NONE );
-//		gGL->glSamplerParameterf( nSamplerObject, GL_TEXTURE_LOD_BIAS, m_lodBias );
 		if ( m_packed.m_compareMode )
 		{
 			gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_COMPARE_FUNC_ARB, GL_LEQUAL );
@@ -401,10 +407,17 @@ struct GLMTexSamplingParams
 			gGL->glTexParameteri( target, GL_TEXTURE_MIN_LOD, m_packed.m_minLOD );
 		}
 
+		if ( m_packed.m_maxLOD != curState.m_packed.m_maxLOD )
+		{
+			gGL->glTexParameteri( target, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
+		}
+
 		if ( m_lodBias != curState.m_lodBias )
 		{
-			// Could use TexParameterf instead, but we don't currently grab it. This works fine, too.
-			gGL->glTexParameterfv( target, GL_TEXTURE_LOD_BIAS, &m_lodBias );
+			float effectiveLodBias = m_lodBias;
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
+				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
+			gGL->glTexParameterf( target, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
 		}
 
 		if ( m_packed.m_compareMode != curState.m_packed.m_compareMode )
@@ -454,7 +467,13 @@ struct GLMTexSamplingParams
 		}
 		gGL->glTexParameterfv( target, GL_TEXTURE_BORDER_COLOR, flBorderColor ); // <-- this crashes ATI's driver, remark it out
 		gGL->glTexParameteri( target, GL_TEXTURE_MIN_LOD, m_packed.m_minLOD );
-//		gGL->glTexParameterfv( target, GL_TEXTURE_LOD_BIAS, &m_lodBias );
+		gGL->glTexParameteri( target, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
+		{
+			float effectiveLodBias = m_lodBias;
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
+				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
+			gGL->glTexParameterf( target, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
+		}
 		gGL->glTexParameteri( target, GL_TEXTURE_COMPARE_MODE_ARB, m_packed.m_compareMode ? GL_COMPARE_R_TO_TEXTURE_ARB : GL_NONE );
 		if ( m_packed.m_compareMode )
 		{

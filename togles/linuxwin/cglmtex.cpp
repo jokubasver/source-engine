@@ -516,13 +516,6 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 		}
 	}
 
-	// Compressed formats (DXT/ASTC) need full mip chains - generate them automatically.
-	// Without this, ASTC textures only have 1 mip level and fade to black at distance.
-	if ( formatDesc->m_chunkSize > 1 )
-	{
-		key->m_texFlags |= kGLMTexMipped;
-	}
-
 	unsigned short index = m_layoutMap.Find( *key );
 	if (index != m_layoutMap.InvalidIndex())
 	{
@@ -3456,6 +3449,13 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		m_maxActiveMip = desc->m_req.m_mip;
 
 		gGL->glTexParameteri( target, GL_TEXTURE_MAX_LEVEL, desc->m_req.m_mip);
+#if defined(_DEBUG) || defined(GLMDEBUG)
+		{
+			GLenum err = gGL->glGetError();
+			if (err != GL_NO_ERROR)
+				GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_MAX_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
+		}
+#endif
 	}
 	
 	if (desc->m_req.m_mip < m_minActiveMip)
@@ -3463,6 +3463,13 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		m_minActiveMip = desc->m_req.m_mip;
 		
 		gGL->glTexParameteri( target, GL_TEXTURE_BASE_LEVEL, desc->m_req.m_mip);
+#if defined(_DEBUG) || defined(GLMDEBUG)
+		{
+			GLenum err = gGL->glGetError();
+			if (err != GL_NO_ERROR)
+				GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_BASE_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
+		}
+#endif
 	}
 
 	if (needsExpand && !m_mapped)
@@ -3522,18 +3529,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 				Assert( writeWholeSlice );	//subimage not implemented in this path yet
 				// compressed path
 				// http://www.opengl.org/sdk/docs/man/xhtml/glCompressedTexImage2D
-				if ( !noDataWrite && sliceAddress )
-				{
 					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, slice->m_storageSize, sliceAddress );
-				}
-				else
-				{
-					// noDataWrite or no backing store - allocate temp zero buffer for compressed init
-					int zeroSize = slice->m_storageSize;
-					char *zeroBuf = (char *)calloc( 1, zeroSize );
-					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, zeroSize, zeroBuf );
-					free( zeroBuf );
-				}
 			}
 			else
 			{

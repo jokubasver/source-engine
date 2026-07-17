@@ -18,8 +18,10 @@ FORCEINLINE uint32 bitmix32(uint32 a)
 
 FORCEINLINE GLuint GLMContext::FindSamplerObject( const GLMTexSamplingParams &desiredParams )
 {
-	int h = bitmix32( desiredParams.m_bits + desiredParams.m_borderColor ) & ( cSamplerObjectHashSize - 1 );
-	while ( ( m_samplerObjectHash[h].m_params.m_bits != desiredParams.m_bits ) || ( m_samplerObjectHash[h].m_params.m_borderColor != desiredParams.m_borderColor ) )
+	uint32 lodBits;
+	memcpy( &lodBits, &desiredParams.m_lodBias, sizeof(lodBits) );
+	int h = bitmix32( desiredParams.m_bits + desiredParams.m_borderColor + bitmix32(lodBits) ) & ( cSamplerObjectHashSize - 1 );
+	while ( ( m_samplerObjectHash[h].m_params.m_bits != desiredParams.m_bits ) || ( m_samplerObjectHash[h].m_params.m_borderColor != desiredParams.m_borderColor ) || ( m_samplerObjectHash[h].m_params.m_lodBias != desiredParams.m_lodBias ) )
 	{
 		if ( !m_samplerObjectHash[h].m_params.m_packed.m_isValid )
 			break;
