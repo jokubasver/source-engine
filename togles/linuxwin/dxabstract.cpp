@@ -1376,6 +1376,14 @@ HRESULT IDirect3D9::CheckDeviceFormat(UINT Adapter,D3DDEVTYPE DeviceType,D3DFORM
 													}
 						break;
 
+						case D3DFMT_ASTC4x4_HDR:
+													// HDR ASTC requires the HDR extension specifically.
+													if ( gGL->m_bHave_GL_KHR_texture_compression_astc_hdr )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+													}
+						break;
+
 						case D3DFMT_A8R8G8B8:		legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
 													legalUsage |=	D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_SRGBREAD | D3DUSAGE_QUERY_SRGBWRITE | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING;
 						break;

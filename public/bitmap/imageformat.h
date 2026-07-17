@@ -106,6 +106,7 @@ enum ImageFormat
 	IMAGE_FORMAT_DXT5_RUNTIME,
 
 	IMAGE_FORMAT_ASTC4x4,
+	IMAGE_FORMAT_ASTC4x4_HDR,
 
 	NUM_IMAGE_FORMATS
 };
@@ -163,6 +164,7 @@ typedef enum _D3DFORMAT
 		
 		// ASTC compressed format for Mali GPUs
 		D3DFMT_ASTC4x4		= 0x34545341,	// MAKEFOURCC('A', 'S', 'T', '4')
+		D3DFMT_ASTC4x4_HDR	= 0x34485341,	// MAKEFOURCC('A', 'S', 'H', '4')
 
 		D3DFMT_UNKNOWN
 	} D3DFORMAT;

@@ -71,6 +71,7 @@ namespace ImageLoader
 			case IMAGE_FORMAT_ATI1N:
 			case IMAGE_FORMAT_ATI2N:
 			case IMAGE_FORMAT_ASTC4x4:
+			case IMAGE_FORMAT_ASTC4x4_HDR:
 				break;
 		}
 

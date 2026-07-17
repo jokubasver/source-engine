@@ -426,7 +426,7 @@ bool CVTFTexture::Init( int nWidth, int nHeight, int nDepth, ImageFormat fmt, in
 
 	if ( ( fmt == IMAGE_FORMAT_DXT1 ) || ( fmt == IMAGE_FORMAT_DXT3 ) || ( fmt == IMAGE_FORMAT_DXT5 ) ||
 		 ( fmt == IMAGE_FORMAT_DXT1_RUNTIME ) || ( fmt == IMAGE_FORMAT_DXT5_RUNTIME ) ||
-		 ( fmt == IMAGE_FORMAT_ASTC4x4 ) )
+		 ( fmt == IMAGE_FORMAT_ASTC4x4 ) || ( fmt == IMAGE_FORMAT_ASTC4x4_HDR ) )
 	{
 		if ( !IsMultipleOf4( nWidth ) || !IsMultipleOf4( nHeight ) || !IsMultipleOf4( nDepth ) )
 		{

@@ -253,6 +253,11 @@ D3DFORMAT GetNearestD3DColorFormat( ImageFormat fmt,
 			return D3DFMT_ASTC4x4;
 		break;
 
+	case IMAGE_FORMAT_ASTC4x4_HDR:
+		if ( TestTextureFormat( D3DFMT_ASTC4x4_HDR, isRenderTarget, bIsVertexTexture, bIsFilterableRequired ) )
+			return D3DFMT_ASTC4x4_HDR;
+		break;
+
 	case IMAGE_FORMAT_UV88:
 		if (TestTextureFormat(D3DFMT_V8U8, isRenderTarget, bIsVertexTexture, bIsFilterableRequired ))
 			return D3DFMT_V8U8;

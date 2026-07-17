@@ -22,6 +22,7 @@
 
 // FOURCC formats for ASTC compressed textures
 #define D3DFMT_ASTC4x4 ((D3DFORMAT)(MAKEFOURCC('A', 'S', 'T', '4')))
+#define D3DFMT_ASTC4x4_HDR ((D3DFORMAT)(MAKEFOURCC('A', 'S', 'H', '4')))
 
 // FOURCC formats for nVidia shadow depth textures
 #define NVFMT_RAWZ		((D3DFORMAT)(MAKEFOURCC('R','A','W','Z')))

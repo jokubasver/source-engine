@@ -95,6 +95,7 @@ static const ImageFormatInfo_t g_ImageFormatInfo[] =
 	{ "DXT5_RUNTIME",				0, 0, 0, 0, 8, true, },			// IMAGE_FORMAT_DXT5_RUNTIME
 
 	{ "ASTC4x4",					0, 0, 0, 0, 0, true },			// IMAGE_FORMAT_ASTC4x4
+	{ "ASTC4x4_HDR",				0, 0, 0, 0, 0, true },			// IMAGE_FORMAT_ASTC4x4_HDR
 };
 
 
@@ -165,6 +166,7 @@ int GetMemRequired( int width, int height, int depth, ImageFormat imageFormat, b
 		case IMAGE_FORMAT_DXT5_RUNTIME:
 		case IMAGE_FORMAT_ATI2N:
 		case IMAGE_FORMAT_ASTC4x4:
+		case IMAGE_FORMAT_ASTC4x4_HDR:
 			return numBlocks * 16;
 		}
 
@@ -415,6 +417,8 @@ ImageFormat D3DFormatToImageFormat( D3DFORMAT format )
 	// ASTC format (for ToGL(ES) on ARM Mali)
 	case (D3DFORMAT)(MAKEFOURCC('A','S','T','4')): // 4 - 4x4 block
 		return IMAGE_FORMAT_ASTC4x4;
+	case (D3DFORMAT)(MAKEFOURCC('A','S','H','4')): // HDR - 4x4 block
+		return IMAGE_FORMAT_ASTC4x4_HDR;
 
 	}
 
@@ -531,6 +535,8 @@ D3DFORMAT ImageFormatToD3DFormat( ImageFormat format )
 	// ASTC format (for ToGL(ES) on ARM Mali)
 	case IMAGE_FORMAT_ASTC4x4:
 		return (D3DFORMAT)(MAKEFOURCC('A','S','T','4'));
+	case IMAGE_FORMAT_ASTC4x4_HDR:
+		return (D3DFORMAT)(MAKEFOURCC('A','S','H','4'));
 
 	}
 

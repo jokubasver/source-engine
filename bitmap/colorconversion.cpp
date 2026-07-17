@@ -1326,7 +1326,8 @@ bool ConvertImageFormat( const uint8 *src, ImageFormat srcImageFormat,
 		     dstImageFormat == IMAGE_FORMAT_DXT5 || dstImageFormat == IMAGE_FORMAT_DXT5_RUNTIME ||
 		     dstImageFormat == IMAGE_FORMAT_ATI1N ||
 		     dstImageFormat == IMAGE_FORMAT_ATI2N ||
-		     dstImageFormat == IMAGE_FORMAT_ASTC4x4 ) && ( srcImageFormat == dstImageFormat ) ) ||
+		     dstImageFormat == IMAGE_FORMAT_ASTC4x4 ||
+		     dstImageFormat == IMAGE_FORMAT_ASTC4x4_HDR ) && ( srcImageFormat == dstImageFormat ) ) ||
 		 ( dstImageFormat == IMAGE_FORMAT_DXT5 && srcImageFormat == IMAGE_FORMAT_DXT5_RUNTIME ) ||
 		 ( dstImageFormat == IMAGE_FORMAT_DXT1 && srcImageFormat == IMAGE_FORMAT_DXT1_RUNTIME ) ||
 		 ( dstImageFormat == IMAGE_FORMAT_DXT5_RUNTIME && srcImageFormat == IMAGE_FORMAT_DXT5 ) ||

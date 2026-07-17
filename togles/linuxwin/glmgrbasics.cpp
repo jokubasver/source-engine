@@ -113,6 +113,7 @@ const GLMValueEntry_t g_d3d_formats[] =
 
 	// ASTC compressed format (for ARM Mali)
 	VE( D3DFMT_ASTC4x4 ),
+	VE( D3DFMT_ASTC4x4_HDR ),
 
 	VE( D3DFMT_UNKNOWN ),
 

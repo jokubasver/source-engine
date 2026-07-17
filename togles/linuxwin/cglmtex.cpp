@@ -146,6 +146,9 @@ const GLMTexFormatDesc g_formatDescTable[] =
 	// ASTC compressed format for ARM Mali GPUs (4x4 block, 16 bytes/block)
 	{ "_ASTC4x4",		D3DFMT_ASTC4x4,			0x93B0/*GL_COMPRESSED_RGBA_ASTC_4x4_KHR*/,	0x93D0/*GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR*/,	GL_RGBA,		GL_UNSIGNED_BYTE,				4, 16 },
 
+	// ASTC HDR compressed format for ARM Mali GPUs (4x4 block, 16 bytes/block, linear only)
+	{ "_ASTC4x4_HDR",	D3DFMT_ASTC4x4_HDR,		0x93B0/*GL_COMPRESSED_RGBA_ASTC_4x4_KHR*/,	0,													GL_RGBA,		GL_UNSIGNED_BYTE,				4, 16 },
+
 //$ TODO: Need to merge bitmap changes over from Dota to get these formats.
 #if 0
 	{ "_A2R10G10B10",	D3DFMT_A2R10G10B10,		GL_RGB10_A2,						GL_RGB10_A2,						GL_RGBA,				GL_UNSIGNED_INT_10_10_10_2,		1, 4 },
@@ -408,6 +411,7 @@ bool	GLMGenTexels( GLMGenTexelParams *params )
 		
 		
 		case D3DFMT_ASTC4x4:
+		case D3DFMT_ASTC4x4_HDR:
 		{
 			// ASTC 4x4 is a compressed format with no per-texel data to generate.
 			// The texture will be initialized via glCompressedTexImage2D from pre-generated data,
