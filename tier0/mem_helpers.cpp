@@ -16,13 +16,71 @@
 bool g_bInitMemory = true;
 
 #ifdef POSIX
+#include <stdio.h>
+#include <string.h>
+
 void DoApplyMemoryInitializations( void *pMem, int nSize )
 {
+	if ( !pMem || nSize <= 0 )
+		return;
+
+	static bool s_initialized = false;
+	static bool s_randomizeMemory = false;
+	static bool s_noInitMemory = false;
+
+	if ( !s_initialized )
+	{
+		s_initialized = true;
+		char *pStr = (char*)Plat_GetCommandLineA();
+		if ( pStr )
+		{
+			char tempStr[512];
+			strncpy( tempStr, pStr, sizeof( tempStr ) - 1 );
+			tempStr[ sizeof( tempStr ) - 1 ] = 0;
+			for ( char *c = tempStr; *c; ++c ) *c = (char)toupper((unsigned char)*c);
+
+			if ( strstr( tempStr, "-RANDOMIZEMEMORY" ) )
+				s_randomizeMemory = true;
+			if ( strstr( tempStr, "-NOINITMEMORY" ) )
+				s_noInitMemory = true;
+		}
+	}
+
+	if ( s_noInitMemory )
+		return;
+
+	unsigned char *pOut = (unsigned char *)pMem;
+	if ( s_randomizeMemory )
+	{
+		for ( int i = 0; i < nSize; i++ )
+			pOut[i] = (unsigned char)(i * 2654435761u);
+	}
+	else
+	{
+		memset( pMem, 0xCD, nSize );
+	}
 }
 
 size_t CalcHeapUsed()
 {
-	return 0;
+	FILE *f = fopen( "/proc/self/status", "r" );
+	if ( !f )
+		return 0;
+
+	size_t vmRSS = 0;
+	char line[256];
+	while ( fgets( line, sizeof(line), f ) )
+	{
+		if ( strncmp( line, "VmRSS:", 6 ) == 0 )
+		{
+			sscanf( line + 6, "%zu", &vmRSS );
+			vmRSS *= 1024; // Convert from kB to bytes
+			break;
+		}
+	}
+
+	fclose( f );
+	return vmRSS;
 }
 
 #else
