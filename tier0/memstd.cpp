@@ -18,6 +18,11 @@
 #undef Verify
 #define VA_COMMIT_FLAGS (MEM_COMMIT|MEM_NOZERO|MEM_LARGE_PAGES)
 #define VA_RESERVE_FLAGS (MEM_RESERVE|MEM_LARGE_PAGES)
+#else // POSIX/Linux
+#include <sys/mman.h>
+#include <unistd.h>
+#define VA_COMMIT_FLAGS 0
+#define VA_RESERVE_FLAGS MAP_ANONYMOUS | MAP_PRIVATE
 #endif
 
 #ifdef OSX
@@ -541,10 +546,54 @@ public:
 #endif
 	}
 };
-CInitGlobalMemAllocPtr sg_InitGlobalMemAllocPtr;
+	CInitGlobalMemAllocPtr sg_InitGlobalMemAllocPtr;
 #endif
 
-#ifdef _WIN32
+#if !defined( _WIN32 ) && !defined( _X360 )
+// POSIX/Linux equivalents of Windows VirtualAlloc/VirtualFree
+#define MEM_COMMIT 1
+#define MEM_RESERVE 2
+#define MEM_DECOMMIT 4
+#define MEM_RELEASE 8
+#define PAGE_READWRITE 0x04
+#define PAGE_NOACCESS 0x01
+
+static void *PosixVirtualAlloc( void *pAddress, size_t nSize, uint32 dwFlags, uint32 dwProtect )
+{
+	void *pResult = mmap( pAddress, nSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0 );
+	if ( pResult == MAP_FAILED )
+		return NULL;
+
+	if ( dwFlags & MEM_COMMIT )
+	{
+		munmap( pResult, nSize );
+		pResult = mmap( pAddress ? pAddress : pResult, nSize, PROT_READ | PROT_WRITE, 
+		               MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
+	}
+
+	return ( pResult == MAP_FAILED ) ? NULL : pResult;
+}
+
+static bool PosixVirtualFree( void *pAddress, size_t nSize, uint32 dwFreeType )
+{
+	if ( dwFreeType & MEM_DECOMMIT )
+	{
+		munmap( pAddress, nSize );
+		return true;
+	}
+	if ( dwFreeType & MEM_RELEASE )
+	{
+		munmap( pAddress, nSize );
+		return true;
+	}
+	return false;
+}
+
+#define VirtualAlloc PosixVirtualAlloc
+#define VirtualFree PosixVirtualFree
+#endif // !defined(_WIN32) && !defined(_X360)
+
+#if defined( _WIN32 ) || ( !defined( PLATFORM_WINDOWS_PC ) && !defined( _X360 ) )
 //-----------------------------------------------------------------------------
 // Small block heap (multi-pool)
 //-----------------------------------------------------------------------------
@@ -777,7 +826,7 @@ CSmallBlockHeap::CSmallBlockHeap()
 	CSmallBlockPool *pCurPool = NULL;
 	int iCurPool = 0;
 
-#if _M_X64
+#if defined(PLATFORM_64BITS)
 	// Blocks sized 0 - 256 are in pools in increments of 16
 	for ( ; i < 64 && i < MAX_TABLE; i++ )
 	{
@@ -991,7 +1040,7 @@ void *CSmallBlockHeap::Realloc( void *p, size_t nBytes )
 
 	if ( pNewBlock )
 	{
-		int nBytesCopy = min( nBytes, pOldPool->GetBlockSize() );
+		size_t nBytesCopy = std::min( nBytes, (size_t)pOldPool->GetBlockSize() );
 		memcpy( pNewBlock, p, nBytesCopy );
 	} 
 
@@ -1384,7 +1433,7 @@ void *CX360SmallBlockHeap::Realloc( void *p, size_t nBytes )
 
 	if ( pNewBlock )
 	{
-		int nBytesCopy = min( nBytes, pOldPool->GetBlockSize() );
+		size_t nBytesCopy = std::min( nBytes, (size_t)pOldPool->GetBlockSize() );
 		memcpy( pNewBlock, p, nBytesCopy );
 	}
 

@@ -1912,6 +1912,11 @@ void *ThreadInterlockedExchangePointer( void * volatile *pDest, void *value )
 void *ThreadInterlockedCompareExchangePointer( void * volatile *p, void *value, void *comparand ) {
 	return (void *)( ( intp )ThreadInterlockedCompareExchange64( reinterpret_cast<intp volatile *>(p), reinterpret_cast<intp>(value), reinterpret_cast<intp>(comparand) ) );
 }
+
+bool ThreadInterlockedAssignPointerIf( void * volatile *pDest, void *value, void *comperand )
+{
+	return __sync_bool_compare_and_swap( pDest, comperand, value );
+}
 #endif
 
 int64 ThreadInterlockedCompareExchange64( int64 volatile *pDest, int64 value, int64 comperand )
