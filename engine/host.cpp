@@ -733,7 +733,7 @@ void CheckForFlushMemory( const char *pCurrentMapName, const char *pDestMapName 
 	if ( host_flush_threshold.GetInt() == 0 )
 		return;
 
-#if defined(_X360)
+#if defined(_X360) || defined(POSIX)
 	// There are three cases in which we flush memory
 	//   Case 1: changing from one map to another
 	//          -> flush temp data caches
@@ -813,9 +813,53 @@ void CheckForFlushMemory( const char *pCurrentMapName, const char *pDestMapName 
 		DevMsg( "---BLACKLISTED!\n" );
 	}
 
+#if defined(_X360)
 	MEMORYSTATUS stat;
 	GlobalMemoryStatus( &stat );
-	if ( ( stat.dwAvailPhys < host_flush_threshold.GetInt() * 1024 * 1024 ) ||
+	size_t availPhys = stat.dwAvailPhys;
+#else
+	// Linux/POSIX: read available memory from /proc/meminfo
+	size_t availPhys = 0;
+	FILE *f = fopen( "/proc/meminfo", "r" );
+	if ( f )
+	{
+		char line[256];
+		while ( fgets( line, sizeof(line), f ) )
+		{
+			if ( strncmp( line, "MemAvailable:", 13 ) == 0 )
+			{
+				sscanf( line + 13, "%zu", &availPhys );
+				availPhys *= 1024; // Convert from kB to bytes
+				break;
+			}
+		}
+		fclose( f );
+	}
+
+	if ( availPhys == 0 )
+	{
+		// Fallback: read total memory minus used
+		f = fopen( "/proc/meminfo", "r" );
+		if ( f )
+		{
+			size_t memFree = 0, buffers = 0, cached = 0;
+			char line[256];
+			while ( fgets( line, sizeof(line), f ) )
+			{
+				if ( strncmp( line, "MemFree:", 8 ) == 0 )
+					sscanf( line + 8, "%zu", &memFree );
+				else if ( strncmp( line, "Buffers:", 8 ) == 0 )
+					sscanf( line + 8, "%zu", &buffers );
+				else if ( strncmp( line, "Cached:", 7 ) == 0 )
+					sscanf( line + 7, "%zu", &cached );
+			}
+			fclose( f );
+			availPhys = ( memFree + buffers + cached ) * 1024;
+		}
+	}
+#endif
+
+	if ( ( availPhys < host_flush_threshold.GetInt() * 1024 * 1024 ) ||
 		 ( bIsDestMapBlacklisted && bIsMapChanging ) )
 	{
 		// Flush everything; ALL data is reloaded from scratch
