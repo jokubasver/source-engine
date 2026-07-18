@@ -985,13 +985,26 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	//if (pushRenderableSlices || pushTexSlices)
 	if ( !( ( layout->m_key.m_texFlags & kGLMTexMipped ) && ( levels == ( unsigned ) m_layout->m_mipCount ) ) )
 	{
+		// For textures created with kGLMTexMippedAuto (D3DUSAGE_AUTOGENMIPMAP) the engine only uploads
+		// mip 0 (D3D forbids locking higher levels on auto-mipmap textures), and the upper mips are
+		// expected to be driver-generated via glGenerateMipmap. Pre-filling those upper mips here with
+		// malloc'd garbage (the inactive "#if 0" purple-fill block above is disabled) sets kSliceValid
+		// on them and bumps m_maxActiveMip to m_mipCount-1, which on GLES tile-based drivers leaves
+		// the sampler free to sample uninitialized tile-buffer contents once LOD crosses mip 1 - the
+		// exact cause of the "harsh LOD transition at a fixed distance" bug seen on Mali-G31. Skip
+		// those upper levels for auto-mipmap textures: keep m_maxActiveMip at 0 so the flush-time
+		// coarse cap (MIN(m_maxLOD, m_maxActiveMip)) clamps the sampler to base level until real base
+		// data is uploaded, at which point WriteTexels invokes glGenerateMipmap and bumps the cap.
+		bool bAutoMipmap = ( layout->m_key.m_texFlags & kGLMTexMippedAuto ) != 0;
+		int prefillMaxMip = bAutoMipmap ? 0 : ( m_layout->m_mipCount - 1 );
+
 		for( int face=0; face <m_layout->m_faceCount; face++)
 		{
-			for( int mip=0; mip <m_layout->m_mipCount; mip++)
+			for( int mip=0; mip <= prefillMaxMip; mip++)
 			{
 				// we're not really going to lock, we're just going to write the blank data from the backing store we just made
 				GLMTexLockDesc	desc;
-				
+
 				desc.m_req.m_tex = this;
 				desc.m_req.m_face = face;
 				desc.m_req.m_mip = mip;
@@ -999,7 +1012,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 				desc.m_sliceIndex = CalcSliceIndex( face, mip );
 
 				GLMTexLayoutSlice *slice = &m_layout->m_slices[ desc.m_sliceIndex ];
-				
+
 				desc.m_req.m_region.xmin = desc.m_req.m_region.ymin = desc.m_req.m_region.zmin = 0;
 				desc.m_req.m_region.xmax = slice->m_xSize;
 				desc.m_req.m_region.ymax = slice->m_ySize;
@@ -3448,28 +3461,44 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 	{
 		m_maxActiveMip = desc->m_req.m_mip;
 
-		gGL->glTexParameteri( target, GL_TEXTURE_MAX_LEVEL, desc->m_req.m_mip);
-#if defined(_DEBUG) || defined(GLMDEBUG)
+		// GL_TEXTURE_MAX_LEVEL and GL_TEXTURE_BASE_LEVEL are not core GLES pnames - they require
+		// GL_APPLE_texture_max_level. On GLES drivers without that extension (e.g. Mali-G31 r13p0),
+		// the texture-object trim would fail with GL_INVALID_ENUM (0x500), so gate the call. The
+		// coarse cap is instead supplied via the sampler-side GL_TEXTURE_MAX_LOD computed at flush
+		// time (see FlushDrawStates). Mark bound samplers dirty so the new effective MAX_LOD actually
+		// gets re-emitted on the next draw.
+		if ( gGL->m_bHave_GL_APPLE_texture_max_level )
 		{
-			GLenum err = gGL->glGetError();
-			if (err != GL_NO_ERROR)
-				GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_MAX_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
-		}
+			gGL->glTexParameteri( target, GL_TEXTURE_MAX_LEVEL, desc->m_req.m_mip);
+#if defined(_DEBUG) || defined(GLMDEBUG)
+			{
+				GLenum err = gGL->glGetError();
+				if (err != GL_NO_ERROR)
+					GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_MAX_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
+			}
 #endif
+		}
+		else
+		{
+			m_ctx->InvalidateSamplersForTex( this );
+		}
 	}
-	
+
 	if (desc->m_req.m_mip < m_minActiveMip)
 	{
 		m_minActiveMip = desc->m_req.m_mip;
-		
-		gGL->glTexParameteri( target, GL_TEXTURE_BASE_LEVEL, desc->m_req.m_mip);
-#if defined(_DEBUG) || defined(GLMDEBUG)
+
+		if ( gGL->m_bHave_GL_APPLE_texture_max_level )
 		{
-			GLenum err = gGL->glGetError();
-			if (err != GL_NO_ERROR)
-				GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_BASE_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
-		}
+			gGL->glTexParameteri( target, GL_TEXTURE_BASE_LEVEL, desc->m_req.m_mip);
+#if defined(_DEBUG) || defined(GLMDEBUG)
+			{
+				GLenum err = gGL->glGetError();
+				if (err != GL_NO_ERROR)
+					GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_BASE_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
+			}
 #endif
+		}
 	}
 
 	if (needsExpand && !m_mapped)
@@ -3646,6 +3675,43 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 	if ( expandTemp )
 	{
 		free( expandTemp );
+	}
+
+	// Textures created with kGLMTexMippedAuto (D3DUSAGE_AUTOGENMIPMAP) only ever get their base mip
+	// uploaded by the engine - D3D forbids locking levels > 0 on auto-mipmap textures. On GLES we
+	// must explicitly invoke glGenerateMipmap (it is core since GLES 2.0) to regenerate the upper
+	// mip chain from the freshly uploaded base data; otherwise those upper levels hold either the
+	// constructor's uninitialized content (now skipped - see pre-fill loop above) or the tile
+	// buffer's cleared garbage on TBDR GPUs like Mali-G31. That garbage dominates the bilinear/
+	// trilinear blend the moment the sampler's LOD crosses mip level 1, manifesting as a harsh
+	// quality/black transition at the spherical LOD distance around the camera - most visible on
+	// small / non-square textures such as 256x64 because the upper mips are tiny and produce sharp
+	// artifact edges. Do this AFTER the per-slice glTexImage2D/glTexSubImage2D so the base level is
+	// resident in GL; also bump m_maxActiveMip up to the full chain so the flush-time coarse-cap
+	// (MIN(m_maxLOD, m_maxActiveMip)) opens up the upper levels instead of clamping the sampler to
+	// base level only. Note: this also catches the very first base-mip upload because the constructor
+	// pre-fill skipped mips > 0 when kGLMTexMippedAuto is set, leaving m_maxActiveMip at 0.
+	if ( desc->m_req.m_mip == 0 && ( m_layout->m_key.m_texFlags & kGLMTexMippedAuto ) )
+	{
+		// Ensure this texture is bound to TMU 0 (the actual sampling-time bind is irrelevant here -
+		// glGenerateMipmap operates on the currently bound texture object for this target). The
+		// earlier m_ctx->BindTexToTMU( this, 0 ) at the top of WriteTexels already handles this,
+		// but other paths into WriteTexels may have re-bound textures since, so re-bind defensively.
+		m_ctx->BindTexToTMU( this, 0 );
+		gGL->glGenerateMipmap( m_layout->m_key.m_texGLTarget );
+
+		int fullMipCount = m_layout->m_mipCount;
+		if ( fullMipCount > 1 && (int)m_maxActiveMip < fullMipCount - 1 )
+		{
+			m_maxActiveMip = fullMipCount - 1;
+			// Don't issue GL_TEXTURE_MAX_LEVEL (it's GL_APPLE_texture_max_level on GLES - absent on
+			// Mali-G31); the flush-time MAX_LOD cap will pick up the relaxed m_maxActiveMip on the
+			// next draw via the sampler-object invalidation done below.
+			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
+			{
+				m_ctx->InvalidateSamplersForTex( this );
+			}
+		}
 	}
 
 	m_ctx->BindTexToTMU( pPrevTex, 0 );

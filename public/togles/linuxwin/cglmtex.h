@@ -291,6 +291,8 @@ struct GLMTexSamplingParams
 		m_packed.m_minFilter = D3DTEXF_POINT;
 		m_packed.m_magFilter = D3DTEXF_POINT;
 		m_packed.m_mipFilter = D3DTEXF_NONE;
+		m_packed.m_minLOD = 0;																			// GL_TEXTURE_MIN_LOD: no fine cap (=D3DSAMP_MAXMIPLEVEL default of 0)
+		m_packed.m_maxLOD = ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) - 1;						// GL_TEXTURE_MAX_LOD: sentinel "no coarse cap"; per-texture streaming clamps this down at flush time
 		m_packed.m_maxAniso = 1;
 		m_packed.m_compareMode = 0;
 		m_packed.m_isValid = true;
@@ -312,7 +314,23 @@ struct GLMTexSamplingParams
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_S, dxtogl_addressMode[m_packed.m_addressU] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_T, dxtogl_addressMode[m_packed.m_addressV] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
-		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
+		GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
+		if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+		{
+			// On GLES drivers without anisotropic filtering (e.g. Mali-G31 r13p0), POINT mip filter
+			// (D3DSAMP_MIPFILTER=D3DTEXF_POINT, Source's default when mat_trilinear 0) resolves to
+			// GL_*_MIPMAP_NEAREST - a hard pop at each LOD boundary, visible as the "harsh LOD
+			// transition at a spherical distance from the camera" symptom, especially on angled
+			// surfaces (floors / walls) where no aniso is available to mask it. Promote to
+			// _MIPMAP_LINEAR for trilinear-class blending - the only practical fix on a no-aniso GLES
+			// part. The packed engine state is left intact so this is purely a dispatch-time override;
+			// sampler-object hash keys (m_bits) and the engine-facing packed state stay unchanged.
+			if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
+				effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
+			else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
+				effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
+		}
+		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 		{
@@ -375,12 +393,23 @@ struct GLMTexSamplingParams
 			gGL->glTexParameteri( target, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
 		}
 
-		if ( ( m_packed.m_minFilter != curState.m_packed.m_minFilter ) || 
+		if ( ( m_packed.m_minFilter != curState.m_packed.m_minFilter ) ||
 			 ( m_packed.m_magFilter != curState.m_packed.m_magFilter ) ||
 			 ( m_packed.m_mipFilter != curState.m_packed.m_mipFilter ) ||
 			 ( m_packed.m_maxAniso != curState.m_packed.m_maxAniso ) )
 		{
-			gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
+			GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+			{
+				// See SetToSamplerObject for rationale: promote POINT mip filter to LINEAR mip
+				// blending on GLES drivers without anisotropic filtering (e.g. Mali-G31), so the
+				// sampler blends across the LOD boundary instead of popping between mips.
+				if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
+					effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
+				else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
+					effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
+			}
+			gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
 			gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 			if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 			{
@@ -450,7 +479,17 @@ struct GLMTexSamplingParams
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_S, dxtogl_addressMode[m_packed.m_addressU] );
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_T, dxtogl_addressMode[m_packed.m_addressV] );
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
-		gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
+		GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
+		if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+		{
+			// See SetToSamplerObject for rationale: promote POINT mip filter to LINEAR mip blending
+			// on GLES drivers without anisotropic filtering (e.g. Mali-G31) to avoid harsh LOD pops.
+			if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
+				effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
+			else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
+				effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
+		}
+		gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
 		gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 		{

@@ -103,6 +103,11 @@ GL_FUNC_VOID(OpenGL,true,glStencilMask,(GLuint a),(a))
 GL_FUNC_VOID(OpenGL,true,glStencilOp,(GLenum a,GLenum b,GLenum c),(a,b,c))
 GL_FUNC_VOID(OpenGL,true,glTexImage2D,(GLenum a,GLint b,GLint c,GLsizei d,GLsizei e,GLint f,GLenum g,GLenum h,const GLvoid *i),(a,b,c,d,e,f,g,h,i))
 GL_FUNC_VOID(OpenGL,true,glTexImage3D,(GLenum a,GLint b,GLint c,GLsizei d,GLsizei e,GLsizei f,GLint g,GLenum h,GLenum i,const GLvoid *j),(a,b,c,d,e,f,g,h,i,j))
+// glGenerateMipmap is core GLES 2.0 / GL 3.0 - used by WriteTexels to regenerate the upper mip chain for
+// textures created with kGLMTexMippedAuto (D3DUSAGE_AUTOGENMIPMAP). Without this call on tile-based GLES
+// drivers (Mali-G31), the upper mips remain at uninitialized tile-buffer contents, producing harsh LOD
+// transitions at the spherical distance where the sampler starts sampling mip 1.
+GL_FUNC_VOID(OpenGL,true,glGenerateMipmap,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,true,glTexParameteri,(GLenum a,GLenum b,GLint c),(a,b,c))
 GL_FUNC_VOID(OpenGL,true,glTexParameterf,(GLenum a,GLenum b,GLfloat c),(a,b,c))
 GL_FUNC_VOID(OpenGL,true,glTexSubImage2D,(GLenum a,GLint b,GLint c,GLint d,GLsizei e,GLsizei f,GLenum g,GLenum h,const GLvoid *i),(a,b,c,d,e,f,g,h,i))
@@ -150,6 +155,11 @@ GL_EXT(GL_APPLE_texture_range,-1,-1)
 GL_FUNC_VOID(GL_APPLE_texture_range,false,glTextureRangeAPPLE,(GLenum a,GLsizei b,void *c),(a,b,c))
 GL_FUNC_VOID(GL_APPLE_texture_range,false,glGetTexParameterPointervAPPLE,(GLenum a,GLenum b,void* *c),(a,b,c))
 GL_EXT(GL_APPLE_client_storage,-1,-1)
+// GL_APPLE_texture_max_level - enables GL_TEXTURE_MAX_LEVEL / GL_TEXTURE_BASE_LEVEL pnames in
+// glTexParameter* on OpenGL ES drivers (e.g. iOS, some Adreno). Desktop GL exposes these pnames
+// unconditionally; OpenGL ES 3.x exposes them only through this extension. Detection here lets
+// callers gate the texture-object MAX/BASE_LEVEL trim and fall back to sampler-side MAX_LOD.
+GL_EXT(GL_APPLE_texture_max_level,-1,-1)
 GL_EXT(GL_ARB_uniform_buffer,-1,-1)
 GL_EXT(GL_ARB_vertex_array_bgra,-1,-1)
 GL_EXT(GL_EXT_vertex_array_bgra,-1,-1)

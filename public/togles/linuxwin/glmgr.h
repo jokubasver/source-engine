@@ -1309,7 +1309,13 @@ class GLMContext
 
 		// samplers
 		FORCEINLINE void SetSamplerTex( int sampler, CGLMTex *tex );
-				
+
+		// Mark every sampler currently bound to *pTex as dirty so the next FlushDrawStates re-emits
+		// sampling params for it. Used by WriteTexels when m_maxActiveMip grows on drivers where
+		// GL_TEXTURE_MAX_LEVEL is unavailable (GLES without GL_APPLE_texture_max_level) - the per-
+		// texture streaming coarse cap has to reach the sampler via GL_TEXTURE_MAX_LOD instead.
+		void InvalidateSamplersForTex( CGLMTex *pTex );
+
 		FORCEINLINE void SetSamplerDirty( int sampler );
 		FORCEINLINE void SetSamplerMinFilter( int sampler, GLenum Value );
 		FORCEINLINE void SetSamplerMagFilter( int sampler, GLenum Value );
@@ -2292,7 +2298,11 @@ FORCEINLINE void GLMContext::SetSamplerMipMapLODBias( int sampler, DWORD Value )
 FORCEINLINE void GLMContext::SetSamplerMaxMipLevel( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) );
-	m_samplers[sampler].m_samp.m_packed.m_maxLOD = Value;
+	// D3DSAMP_MAXMIPLEVEL is the most-detail (fine) LOD cap = "lowest mip level the sampler may use".
+	// It maps to GL_TEXTURE_MIN_LOD (a fine cap), NOT to GL_TEXTURE_MAX_LOD (a coarse cap).
+	// D3D's default value of 0 means "no fine cap", which corresponds to MIN_LOD = 0.
+	// The coarse cap is instead driven per-texture from WriteTexels' m_maxActiveMip tracker.
+	m_samplers[sampler].m_samp.m_packed.m_minLOD = Value;
 }
 
 FORCEINLINE void GLMContext::SetSamplerMaxAnisotropy( int sampler, DWORD Value )

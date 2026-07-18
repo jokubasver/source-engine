@@ -270,7 +270,24 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			m_nDirtySamplerFlags[nSamplerIndex] = 1;
 
-			gGL->glBindSampler( nSamplerIndex, FindSamplerObject( m_samplers[nSamplerIndex].m_samp ) );
+			// On GLES drivers without GL_APPLE_texture_max_level the per-texture coarse cap (highest
+			// mip that has been written so far) cannot be set on the texture object via
+			// GL_TEXTURE_MAX_LEVEL. Apply it as a sampler-side GL_TEXTURE_MAX_LOD clamp at flush time
+			// instead, by intersecting the D3D-requested coarse cap with pTex->m_maxActiveMip. The
+			// clamped copy is what we hand to FindSamplerObject; the underlying sampler state in
+			// m_samplers[] is left untouched so re-uploads can relax the cap as mips stream in.
+			GLMTexSamplingParams samp = m_samplers[nSamplerIndex].m_samp;
+			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
+			{
+				CGLMTex *pTex = m_samplers[nSamplerIndex].m_pBoundTex;
+				if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) )
+				{
+					int maxActiveMip = pTex->m_maxActiveMip;
+					if ( maxActiveMip >= 0 && (int)samp.m_packed.m_maxLOD > maxActiveMip )
+						samp.m_packed.m_maxLOD = maxActiveMip;
+				}
+			}
+			gGL->glBindSampler( nSamplerIndex, FindSamplerObject( samp ) );
 
 			GL_BATCH_PERF( m_FlushStats.m_nNumSamplingParamsChanged++ );
 
@@ -303,13 +320,28 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			CGLMTex *pTex = m_samplers[nSamplerIndex].m_pBoundTex;
 
-			if ( ( pTex ) && ( !( pTex->m_SamplingParams == m_samplers[nSamplerIndex].m_samp ) ) )
+			// Same context as the sampler-object branch above: clamp to MAX_LOD = MIN(requested,
+			// pTex->m_maxActiveMip) when GL_TEXTURE_MAX_LEVEL is unavailable. The clamped copy feeds
+			// both the differential comparator and the DeltaSetToTarget emitter, and becomes the
+			// texture's new latched sampling state so subsequent flushes can correctly diff again.
+			GLMTexSamplingParams samp = m_samplers[nSamplerIndex].m_samp;
+			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
+			{
+				if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) )
+				{
+					int maxActiveMip = pTex->m_maxActiveMip;
+					if ( maxActiveMip >= 0 && (int)samp.m_packed.m_maxLOD > maxActiveMip )
+						samp.m_packed.m_maxLOD = maxActiveMip;
+				}
+			}
+
+			if ( ( pTex ) && ( !( pTex->m_SamplingParams == samp ) ) )
 			{
 				SelectTMU( nSamplerIndex );
 
-				m_samplers[nSamplerIndex].m_samp.DeltaSetToTarget( pTex->m_texGLTarget, pTex->m_SamplingParams );
+				samp.DeltaSetToTarget( pTex->m_texGLTarget, pTex->m_SamplingParams );
 
-				pTex->m_SamplingParams = m_samplers[nSamplerIndex].m_samp;
+				pTex->m_SamplingParams = samp;
 
 #if defined( OSX )
 				if( pTex && !( gGL->m_bHave_GL_EXT_texture_sRGB_decode ) )

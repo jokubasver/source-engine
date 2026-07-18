@@ -2618,6 +2618,8 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 		params.m_packed.m_minFilter = D3DTEXF_POINT;
 		params.m_packed.m_magFilter = D3DTEXF_POINT;
 		params.m_packed.m_mipFilter = D3DTEXF_NONE;
+		params.m_packed.m_minLOD = 0;															// GL_TEXTURE_MIN_LOD: no fine cap (=D3DSAMP_MAXMIPLEVEL default of 0)
+		params.m_packed.m_maxLOD = ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) - 1;		// GL_TEXTURE_MAX_LOD: sentinel "no coarse cap". m_maxLOD is purely internal - D3D has no equivalent of the coarse cap; the engine never writes it. Without this init, the memset above leaves it at 0, which on GLES drivers (where commit 02aa9be1 wires actual GL_TEXTURE_MAX_LOD emission) clamps the sampler to base level only. Per-texture streaming (WriteTexels' m_maxActiveMip) intersects this at flush time via MIN(m_maxLOD, m_maxActiveMip).
 		params.m_packed.m_maxAniso = 1;
 		params.m_packed.m_isValid = true;
 		params.m_packed.m_compareMode = 0;
@@ -3187,6 +3189,23 @@ void GLMContext::MarkAllSamplersDirty()
 	{
 		m_nDirtySamplerFlags[i] = 0;
 		m_nDirtySamplers[i] = (uint8)i;
+	}
+}
+
+void GLMContext::InvalidateSamplersForTex( CGLMTex *pTex )
+{
+	// Mark every sampler currently bound to *pTex as dirty so the next FlushDrawStates re-emits
+	// sampling params for it. CGLMTex::WriteTexels calls this when m_maxActiveMip grows on GLES
+	// drivers without GL_APPLE_texture_max_level, where the per-texture coarse cap must reach the
+	// sampler via GL_TEXTURE_MAX_LOD instead of GL_TEXTURE_MAX_LEVEL. SetSamplerDirty already
+	// deduplicates against the in-flight dirty queue.
+	Assert( pTex );
+	for ( uint i = 0; i < GLM_SAMPLER_COUNT; ++i )
+	{
+		if ( m_samplers[i].m_pBoundTex == pTex )
+		{
+			SetSamplerDirty( i );
+		}
 	}
 }
 
