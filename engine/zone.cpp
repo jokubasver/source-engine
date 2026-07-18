@@ -134,12 +134,31 @@ void Memory_Init( void )
 {
 	MEM_ALLOC_CREDIT();
 
+	// Detect total system RAM for low-RAM targets (e.g., RK3326 with 1GB shared).
+	size_t nTotalRAM = 0;
+	FILE *f = fopen( "/proc/meminfo", "r" );
+	if ( f )
+	{
+		char line[256];
+		while ( fgets( line, sizeof(line), f ) )
+		{
+			if ( strncmp( line, "MemTotal:", 9 ) == 0 )
+			{
+				sscanf( line + 9, "%zu", &nTotalRAM );
+				nTotalRAM *= 1024; // Convert from kB to bytes
+				break;
+			}
+		}
+		fclose( f );
+	}
+
 #ifdef PLATFORM_64BITS
     // Seems to need to be larger to not get exhausted on
     // 64-bit. Perhaps because of larger pointer sizes.
-    int nMaxBytes = 128*1024*1024;
+    // Scale down for low-RAM systems (1GB shared RAM).
+    int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2*1024*1024*1024) ? 64*1024*1024 : 128*1024*1024;
 #else
-	int nMaxBytes = 48*1024*1024;
+	int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2*1024*1024*1024) ? 32*1024*1024 : 48*1024*1024;
 #endif
 	const int nMinCommitBytes = 0x8000;
 #ifndef HUNK_USE_16MB_PAGE
