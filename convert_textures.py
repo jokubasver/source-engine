@@ -135,31 +135,29 @@ def _rgba_to_tga(rgba_data, width, height):
     header[17] = 40
 
     pixels = bytearray(len(rgba_data))
-    for i in range(0, len(rgba_data), 4):
-        pixels[i] = rgba_data[i + 2]
-        pixels[i + 1] = rgba_data[i + 1]
-        pixels[i + 2] = rgba_data[i]
-        pixels[i + 3] = rgba_data[i + 3]
+    src_mv = memoryview(rgba_data)
+    dst_mv = memoryview(pixels)
+    dst_mv[0::4] = src_mv[2::4]
+    dst_mv[1::4] = src_mv[1::4]
+    dst_mv[2::4] = src_mv[0::4]
+    dst_mv[3::4] = src_mv[3::4]
 
     return bytes(header) + bytes(pixels)
 
 
 def _pad_rgba_ldr(rgba_data, width, height, pad_w, pad_h):
     padded = bytearray(pad_w * pad_h * 4)
+    src_mv = memoryview(rgba_data)
+    dst_mv = memoryview(padded)
     for y in range(pad_h):
         src_y = min(y, height - 1)
         src_row_start = src_y * width * 4
         dst_row_start = y * pad_w * 4
-        copy_w = min(width, pad_w)
-        for x in range(copy_w):
-            si = src_row_start + x * 4
-            di = dst_row_start + x * 4
-            padded[di:di + 4] = rgba_data[si:si + 4]
+        copy_len = min(width, pad_w) * 4
+        dst_mv[dst_row_start:dst_row_start + copy_len] = src_mv[src_row_start:src_row_start + copy_len]
         if pad_w > width:
-            last_val = rgba_data[src_row_start + (width - 1) * 4:src_row_start + width * 4]
-            for x in range(width, pad_w):
-                off = dst_row_start + x * 4
-                padded[off:off + 4] = last_val
+            last_pixel = bytes(src_mv[src_row_start + (width - 1) * 4:src_row_start + width * 4])
+            dst_mv[dst_row_start + width * 4:dst_row_start + pad_w * 4] = last_pixel * (pad_w - width)
     return bytes(padded)
 
 
@@ -199,20 +197,17 @@ def _rgba16f_to_dds(rgba16f_data, width, height):
 
 def _pad_rgba16f(rgba16f_data, width, height, pad_w, pad_h):
     padded = bytearray(pad_w * pad_h * 8)
+    src_mv = memoryview(rgba16f_data)
+    dst_mv = memoryview(padded)
     for y in range(pad_h):
         src_y = min(y, height - 1)
         src_row_start = src_y * width * 8
         dst_row_start = y * pad_w * 8
-        copy_w = min(width, pad_w)
-        for x in range(copy_w):
-            si = src_row_start + x * 8
-            di = dst_row_start + x * 8
-            padded[di:di + 8] = rgba16f_data[si:si + 8]
+        copy_len = min(width, pad_w) * 8
+        dst_mv[dst_row_start:dst_row_start + copy_len] = src_mv[src_row_start:src_row_start + copy_len]
         if pad_w > width:
-            last_val = rgba16f_data[src_row_start + (width - 1) * 8:src_row_start + width * 8]
-            for x in range(width, pad_w):
-                off = dst_row_start + x * 8
-                padded[off:off + 8] = last_val
+            last_pixel = bytes(src_mv[src_row_start + (width - 1) * 8:src_row_start + width * 8])
+            dst_mv[dst_row_start + width * 8:dst_row_start + pad_w * 8] = last_pixel * (pad_w - width)
     return bytes(padded)
 
 
@@ -235,17 +230,19 @@ def _downscale_rgba16f(src_data, src_w, src_h, dst_w, dst_h):
             counts[dy * dst_w + dx] += 1
     for i in range(dst_w * dst_h):
         c = counts[i]
+        base = i * 4
         if c > 0:
-            base = i * 4
             tmp_pixels[base] /= c
             tmp_pixels[base + 1] /= c
             tmp_pixels[base + 2] /= c
             tmp_pixels[base + 3] /= c
-        struct.pack_into('<4e', result, i * 8,
-                         tmp_pixels[base] if c > 0 else 0.0,
-                         tmp_pixels[base + 1] if c > 0 else 0.0,
-                         tmp_pixels[base + 2] if c > 0 else 0.0,
-                         tmp_pixels[base + 3] if c > 0 else 0.0)
+            struct.pack_into('<4e', result, i * 8,
+                             tmp_pixels[base],
+                             tmp_pixels[base + 1],
+                             tmp_pixels[base + 2],
+                             tmp_pixels[base + 3])
+        else:
+            struct.pack_into('<4e', result, i * 8, 0.0, 0.0, 0.0, 0.0)
     return bytes(result)
 
 
@@ -272,9 +269,14 @@ def compress_to_astc(pixel_data, width, height, astcenc_path, color_profile, qua
                 f.write(tga_data)
             cp = color_profile
 
+        startupinfo = None
+        if sys.platform == 'win32':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         result = subprocess.run(
             [astcenc_path, cp, in_path, out_path, '4x4', '-' + quality, '-j', str(jobs), '-silent'],
             capture_output=True, timeout=120,
+            startupinfo=startupinfo,
         )
         if result.returncode != 0:
             return None
@@ -315,10 +317,10 @@ def downscale_rgba(rgba_data, src_w, src_h, dst_w, dst_h):
                     n += 1
             idx = (dy * dst_w + dx) * 4
             if n:
-                result[idx] = r // n
-                result[idx + 1] = g // n
-                result[idx + 2] = b // n
-                result[idx + 3] = a // n
+                result[idx] = (r + n // 2) // n
+                result[idx + 1] = (g + n // 2) // n
+                result[idx + 2] = (b + n // 2) // n
+                result[idx + 3] = (a + n // 2) // n
     return bytes(result)
 
 def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality, skip_existing, jobs=1):
@@ -345,11 +347,11 @@ def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality
     start_frame = vtf.start_frame
     is_hdr = (vtf.format == vtfpp.ImageFormat.RGBA16161616F)
 
+    max_mips = compute_num_mip_levels(width, height)
     if mip_count <= 0:
-        mip_count = compute_num_mip_levels(width, height)
+        mip_count = max_mips
 
-    full_chain = compute_num_mip_levels(width, height)
-    actual_mip_count = min(mip_count, full_chain)
+    actual_mip_count = min(mip_count, max_mips)
 
     color_profile = '-cs' if is_srgb_texture(vtf, entry_name) else '-cl'
 
@@ -595,10 +597,9 @@ def process_bsp_file(bsp_src_path, bsp_dst_path, astcenc_path, quality, skip_exi
         return results
 
     vtf_names = [n for n in all_names if n.lower().endswith('.vtf')]
+    results['total'] = len(vtf_names)
     if not vtf_names:
         return results
-
-    results['total'] = len(vtf_names)
     converted = {}
     conv_lock = threading.Lock()
 
@@ -651,18 +652,15 @@ def convert_vtf_entry_inline(entry_data, entry_name, astcenc_path, quality, skip
     if fmt == IMAGE_FORMAT_ASTC4x4 or fmt == IMAGE_FORMAT_ASTC4x4_HDR:
         return {'status': 'already_astc', 'entry_name': entry_name}
 
-    tmp_out = os.path.join(tempfile.mkdtemp(prefix='bsp_vtf_'), os.path.basename(entry_name))
+    tmp_dir = tempfile.mkdtemp(prefix='bsp_vtf_')
+    tmp_out = os.path.join(tmp_dir, os.path.basename(entry_name))
     try:
-        result = convert_vtf_entry(entry_data, entry_name, tmp_out, astcenc_path, quality, skip_existing=False, jobs=jobs)
+        result = convert_vtf_entry(entry_data, entry_name, tmp_out, astcenc_path, quality, skip_existing=skip_existing, jobs=jobs)
         if result['status'] == 'ok':
             with open(tmp_out, 'rb') as f:
                 result['data'] = f.read()
     finally:
-        try:
-            os.remove(tmp_out)
-            os.rmdir(os.path.dirname(tmp_out))
-        except Exception:
-            pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     return result
 
 
