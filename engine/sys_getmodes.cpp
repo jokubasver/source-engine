@@ -905,6 +905,9 @@ void CVideoMode_Common::DrawStartupGraphic()
     int th = m_pBackgroundTexture->Height();
     int lw = m_pLoadingTexture->Width();
     int lh = m_pLoadingTexture->Height();
+    float flLogoScale = min( 1.0f, min( (float)w / 1280.0f, (float)h / 720.0f ) );
+    int lwScaled = IsSteamDeck() ? (int)( lw * flLogoScale ) : lw;
+    int lhScaled = IsSteamDeck() ? (int)( lh * flLogoScale ) : lh;
 
 	if (debugstartup)
 	{
@@ -932,8 +935,7 @@ void CVideoMode_Common::DrawStartupGraphic()
                 if ( !IsSteamDeck() )
                     DrawScreenSpaceRectangle( pLoadingMaterial, w-lw, h-lh+slide/2, lw, lh, 0, 0, lw-1, lh-1, lw, lh, NULL,1,1,depth-0.1 );
                 else
-                    // TODO: Steam Deck
-                    DrawScreenSpaceRectangle( pLoadingMaterial, w-lw, h-lh+slide/2, lw, lh, 0, 0, lw-1, lh-1, lw, lh, NULL,1,1,depth-0.1 );
+                    DrawScreenSpaceRectangle( pLoadingMaterial, w-lwScaled, 16+slide/2, lwScaled, lhScaled, 0, 0, lw-1, lh-1, lw, lh, NULL,1,1,depth-0.1 );
 			}
 
 			if(0)
@@ -978,7 +980,9 @@ void CVideoMode_Common::DrawStartupGraphic()
 			pRenderContext->ClearColor3ub( 0, 0, 0 );
 			pRenderContext->ClearBuffers( true, true, true );
 			DrawScreenSpaceRectangle( pMaterial, 0, 0, w, h, 0, 0, tw-1, th-1, tw, th, NULL,1,1,depth );
-			DrawScreenSpaceRectangle( pLoadingMaterial, w-lw, h-lh, lw, lh, 0, 0, lw-1, lh-1, lw, lh, NULL,1,1,depth );
+			int loadX = IsSteamDeck() ? w - lwScaled : w - lw;
+			int loadY = IsSteamDeck() ? 16 : h - lh;
+			DrawScreenSpaceRectangle( pLoadingMaterial, loadX, loadY, IsSteamDeck() ? lwScaled : lw, IsSteamDeck() ? lhScaled : lh, 0, 0, lw-1, lh-1, lw, lh, NULL,1,1,depth );
 			g_pMaterialSystem->SwapBuffers();
 		}
 	}

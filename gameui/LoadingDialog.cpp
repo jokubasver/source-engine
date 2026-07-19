@@ -25,6 +25,12 @@
 #include "GameUI_Interface.h"
 #include "ModInfo.h"
 #include "BasePanel.h"
+#include "materialsystem/imaterialsystem.h"
+#include "materialsystem/imaterial.h"
+#include "materialsystem/imaterialvar.h"
+#include "VGuiMatSurface/IMatSystemSurface.h"
+
+extern IMaterialSystem *materials;
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include <tier0/memdbgon.h>
@@ -41,7 +47,10 @@ CLoadingDialog::CLoadingDialog( vgui::Panel *parent ) : Frame(parent, "LoadingDi
 	// Use console style
 	m_bConsoleStyle = GameUI().IsConsoleUI();
 
-	if ( !m_bConsoleStyle )
+	// Check for Steam Deck/gamepadui mode
+	m_bIsSteamDeck = IsSteamDeck();
+
+	if ( !m_bConsoleStyle && !m_bIsSteamDeck )
 	{
 		SetSize( 416, 100 );
 		SetTitle( "#GameUI_Loading", true );
@@ -100,7 +109,31 @@ CLoadingDialog::CLoadingDialog( vgui::Panel *parent ) : Frame(parent, "LoadingDi
 		m_pProgress2->SetVisible(false);
 	}
 
+	// Steam Deck: full-screen loading with no chrome
+	if ( m_bIsSteamDeck )
+	{
+		m_bCenter = false;
+		int swide, stall;
+		vgui::surface()->GetScreenSize( swide, stall );
+		SetSize( swide, stall );
+		SetMinimumSize( 0, 0 );
+		SetSizeable( false );
+		SetMoveable( false );
+		m_pProgress->SetVisible( false );
+		m_pProgress2->SetVisible( false );
+		m_pInfoLabel->SetVisible( false );
+		m_pCancelButton->SetVisible( false );
+		m_pTimeRemainingLabel->SetVisible( false );
+	}
+
 	SetupControlSettings( false );
+
+	// Apply chrome settings after SetupControlSettings so the .res file can't re-enable them
+	if ( m_bIsSteamDeck )
+	{
+		SetTitleBarVisible( false );
+		SetCloseButtonVisible( false );
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -116,6 +149,77 @@ CLoadingDialog::~CLoadingDialog()
 
 void CLoadingDialog::PaintBackground()
 {
+	if ( m_bIsSteamDeck )
+	{
+		int wide, tall;
+		GetSize( wide, tall );
+
+		// Draw the game logo at the top-right
+		const char *logo = "gamepadui/game_logo";
+		int iLogoID = vgui::surface()->DrawGetTextureId( logo );
+		if ( iLogoID == -1 )
+		{
+			iLogoID = vgui::surface()->CreateNewTextureID();
+			vgui::surface()->DrawSetTextureFile( iLogoID, logo, false, true );
+		}
+		int logoWide, logoTall;
+		vgui::surface()->DrawGetTextureSize( iLogoID, logoWide, logoTall );
+		float flScale = min( 1.0f, min( (float)wide / 1280.0f, (float)tall / 720.0f ) );
+		int logoWideScaled = (int)( logoWide * flScale );
+		int logoTallScaled = (int)( logoTall * flScale );
+		vgui::surface()->DrawSetColor( 255, 255, 255, 255 );
+		vgui::surface()->DrawSetTexture( iLogoID );
+		vgui::surface()->DrawTexturedRect( wide - logoWideScaled - 16, 16, wide - 16, 16 + logoTallScaled );
+
+		// Draw the animated spinner centered over the logo
+		IMaterial *pSpinnerMat = materials->FindMaterial( "gamepadui/spinner", TEXTURE_GROUP_VGUI );
+		if ( pSpinnerMat && !pSpinnerMat->IsErrorMaterial() )
+		{
+			int iSpinnerTexID = vgui::surface()->DrawGetTextureId( "gamepadui/spinner" );
+			if ( iSpinnerTexID == -1 )
+			{
+				iSpinnerTexID = vgui::surface()->CreateNewTextureID();
+				static_cast<IMatSystemSurface*>(vgui::surface())->DrawSetTextureMaterial( iSpinnerTexID, pSpinnerMat );
+			}
+			int numFrames = pSpinnerMat->GetNumAnimationFrames();
+			if ( numFrames > 1 )
+			{
+				int iFrameNum = (int)( Plat_FloatTime() * 60.0f ) % numFrames;
+				pSpinnerMat->FindVar( "$frame", NULL )->SetIntValue( iFrameNum );
+			}
+			int spinnerWide, spinnerTall;
+			vgui::surface()->DrawGetTextureSize( iSpinnerTexID, spinnerWide, spinnerTall );
+			if ( spinnerWide > 0 && spinnerTall > 0 )
+			{
+				int spinnerScaledWide = (int)( spinnerWide * flScale );
+				int spinnerScaledTall = (int)( spinnerTall * flScale );
+				int spinnerX = wide - logoWideScaled - 16 + ( logoWideScaled - spinnerScaledWide ) / 2;
+				int spinnerY = 16 + ( logoTallScaled - spinnerScaledTall ) / 2;
+				vgui::surface()->DrawSetColor( 255, 255, 255, 255 );
+				vgui::surface()->DrawSetTexture( iSpinnerTexID );
+				vgui::surface()->DrawTexturedRect( spinnerX, spinnerY, spinnerX + spinnerScaledWide, spinnerY + spinnerScaledTall );
+			}
+		}
+
+		// Draw the progress bar at the bottom
+		int barHeight = 10;
+		int barY = tall - barHeight;
+
+		// Bar background (full width)
+		vgui::surface()->DrawSetColor( 40, 40, 40, 255 );
+		vgui::surface()->DrawFilledRect( 0, barY, wide, tall );
+
+		// Bar fill
+		int fillWidth = (int)( (float)wide * m_flProgressFraction );
+		if ( fillWidth > 0 )
+		{
+			vgui::surface()->DrawSetColor( 173, 123, 55, 255 );
+			vgui::surface()->DrawFilledRect( 0, barY, fillWidth, tall );
+		}
+
+		return;
+	}
+
 	if ( !m_bConsoleStyle )
 	{
 		BaseClass::PaintBackground();
@@ -163,6 +267,12 @@ void CLoadingDialog::SetupControlSettings( bool bForceShowProgressText )
 {
 	m_bShowingVACInfo = false;
 
+	if ( m_bIsSteamDeck )
+	{
+		LoadControlSettings( "Resource/LoadingDialogDeck.res" );
+		return;
+	}
+
 	if ( GameUI().IsConsoleUI() )
 	{
 		KeyValues *pControlSettings = BasePanel()->GetConsoleControlSettings()->FindKey( "LoadingDialogNoBanner.res" );
@@ -190,7 +300,7 @@ void CLoadingDialog::SetupControlSettings( bool bForceShowProgressText )
 //-----------------------------------------------------------------------------
 void CLoadingDialog::Open()
 {
-	if ( !m_bConsoleStyle )
+	if ( !m_bConsoleStyle && !m_bIsSteamDeck )
 	{
 		SetTitle( "#GameUI_Loading", true );
 	}
@@ -198,7 +308,7 @@ void CLoadingDialog::Open()
 	HideOtherDialogs( true );
 	BaseClass::Activate();
 
-	if ( !m_bConsoleStyle )
+	if ( !m_bConsoleStyle && !m_bIsSteamDeck )
 	{
 		m_pProgress->SetVisible( true );
 		if ( !ModInfo().IsSinglePlayerOnly() )
@@ -448,7 +558,14 @@ void CLoadingDialog::OnThink()
 //-----------------------------------------------------------------------------
 void CLoadingDialog::PerformLayout()
 {
-	if ( m_bConsoleStyle )
+	if ( m_bIsSteamDeck )
+	{
+		int screenWide, screenTall;
+		surface()->GetScreenSize( screenWide, screenTall );
+		SetPos( 0, 0 );
+		SetSize( screenWide, screenTall );
+	}
+	else if ( m_bConsoleStyle )
 	{
 		// place in lower center
 		int screenWide, screenTall;
@@ -511,14 +628,18 @@ void CLoadingDialog::PerformLayout()
 //-----------------------------------------------------------------------------
 bool CLoadingDialog::SetProgressPoint( float fraction )
 {
-	if ( m_bConsoleStyle )
+	if ( m_bConsoleStyle || m_bIsSteamDeck )
 	{
 		if ( fraction >= 0.99f )
 		{
-			// show the progress artifically completed to fill in 100%
 			fraction = 1.0f;
 		}
 		fraction = clamp( fraction, 0.0f, 1.0f );
+		if ( m_bIsSteamDeck )
+		{
+			m_flProgressFraction = fraction;
+			return true;
+		}
 		if ( (int)(fraction * 25) != (int)(m_flProgressFraction * 25) )
 		{
 			m_flProgressFraction = fraction;

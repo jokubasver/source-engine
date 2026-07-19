@@ -1468,7 +1468,7 @@ void CBasePanel::DrawBackgroundImage()
 	}
 
 	// 360 always use the progress bar, TCR Requirement, and never this loading plaque
-	if ( IsPC() && ( m_bRenderingBackgroundTransition || m_eBackgroundState == BACKGROUND_LOADING ) )
+	if ( IsPC() && !IsSteamDeck() && ( m_bRenderingBackgroundTransition || m_eBackgroundState == BACKGROUND_LOADING ) )
 	{
 		// draw the loading image over the top
 		surface()->DrawSetColor(255, 255, 255, alpha);
@@ -1532,7 +1532,7 @@ void CBasePanel::CreateGameMenu()
 //-----------------------------------------------------------------------------
 void CBasePanel::CreateGameLogo()
 {
-	if ( ModInfo().UseGameLogo() )
+	if ( ModInfo().UseGameLogo() && !IsSteamDeck() )
 	{
 		m_pGameLogo = new CMainMenuGameLogo( this, "GameLogo" );
 
@@ -1589,7 +1589,8 @@ void CBasePanel::UpdateGameMenus()
 
 	// position the menu
 	InvalidateLayout();
-	m_pGameMenu->SetVisible( true );
+	if ( !IsSteamDeck() )
+		m_pGameMenu->SetVisible( true );
 }
 
 //-----------------------------------------------------------------------------
@@ -1921,9 +1922,7 @@ void CBasePanel::ApplySchemeSettings(IScheme *pScheme)
 		// load the loading icon
 		if ( m_iLoadingImageID == -1 )
 		{
-			const char* loading = "console/startup_loading";
-			if ( IsSteamDeck() )
-				loading = "gamepadui/game_logo";
+			const char *loading = "console/startup_loading";
 			m_iLoadingImageID = surface()->CreateNewTextureID();
 			surface()->DrawSetTextureFile( m_iLoadingImageID, loading, false, false );
 		}
@@ -3834,6 +3833,17 @@ void CBasePanel::SetMainMenuOverride( vgui::VPANEL panel )
 	{
 		// Parent it to this panel
 		ipanel()->SetParent( m_hMainMenuOverridePanel, GetVPanel() );
+	}
+
+	// Hide the game logo and title buttons when an override panel is active (e.g. GamepadUI)
+	if ( m_pGameLogo )
+	{
+		m_pGameLogo->SetVisible( panel == NULL );
+	}
+
+	for ( int i = 0; i < m_pGameMenuButtons.Count(); ++i )
+	{
+		m_pGameMenuButtons[i]->SetVisible( panel == NULL );
 	}
 }
 

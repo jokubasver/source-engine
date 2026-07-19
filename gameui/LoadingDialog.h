@@ -64,6 +64,7 @@ private:
 	bool	m_bShowingVACInfo;
 	bool	m_bCenter;
 	bool	m_bConsoleStyle;
+	bool	m_bIsSteamDeck;
 	float	m_flProgressFraction;	
 
 	CPanelAnimationVar( int, m_iAdditionalIndentX, "AdditionalIndentX", "0" );
