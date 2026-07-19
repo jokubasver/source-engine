@@ -983,7 +983,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	#endif
 	
 	//if (pushRenderableSlices || pushTexSlices)
-	if ( !( ( layout->m_key.m_texFlags & kGLMTexMipped ) && ( levels == ( unsigned ) m_layout->m_mipCount ) ) )
+	if ( (layout->m_format->m_chunkSize == 1) && !( ( layout->m_key.m_texFlags & kGLMTexMipped ) && ( levels == ( unsigned ) m_layout->m_mipCount ) ) )
 	{
 		// For textures created with kGLMTexMippedAuto (D3DUSAGE_AUTOGENMIPMAP) the engine only uploads
 		// mip 0 (D3D forbids locking higher levels on auto-mipmap textures), and the upper mips are

@@ -1277,8 +1277,23 @@ CGLMShaderPairCache::CGLMShaderPairCache( GLMContext *ctx  )
 	m_rowsMask = m_rows - 1;
 
 	m_waysLg2 = gl_shaderpair_cacheways_lg2.GetInt();
-	if (m_waysLg2 < 5)
-		m_waysLg2 = 5;
+	if ( V_stristr(gGL->m_pGLDriverStrings[cGLVendorString], "arm") != NULL )
+	{
+		// On mobile TBDR GPUs (Mali G31 etc.), 8 ways (lg2=3) is ample
+		// and saves ~960 KiB per context (32,768→4,096 entries × 40 B).
+		// The desktop default (lg2=5 → 32 ways) wastes RAM with no culling
+		// benefit on low-vertex-count mobile workloads.  Users who set the
+		// convar explicitly still get their value as long as it's ≥3.
+		if (m_waysLg2 < 3)
+			m_waysLg2 = 3;
+		if (m_waysLg2 == 5)		// convar likely still at default "5"
+			m_waysLg2 = 3;
+	}
+	else
+	{
+		if (m_waysLg2 < 5)
+			m_waysLg2 = 5;
+	}
 	m_ways = 1<<m_waysLg2;
 
 	m_entryCount = m_rows * m_ways;
