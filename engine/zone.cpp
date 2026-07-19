@@ -156,9 +156,12 @@ void Memory_Init( void )
     // Seems to need to be larger to not get exhausted on
     // 64-bit. Perhaps because of larger pointer sizes.
     // Scale down for low-RAM systems (1GB shared RAM).
-    int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2*1024*1024*1024) ? 64*1024*1024 : 128*1024*1024;
+    // Use 2ULL to force 64-bit arithmetic: plain `2*1024*1024*1024` overflows
+    // 32-bit int (UB, sign-extends to a huge size_t on LP64), which would make
+    // the low-RAM branch always selected on every 64-bit Linux system.
+    int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2ULL*1024*1024*1024) ? 64*1024*1024 : 128*1024*1024;
 #else
-	int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2*1024*1024*1024) ? 32*1024*1024 : 48*1024*1024;
+	int nMaxBytes = (nTotalRAM > 0 && nTotalRAM < 2ULL*1024*1024*1024) ? 32*1024*1024 : 48*1024*1024;
 #endif
 	const int nMinCommitBytes = 0x8000;
 #ifndef HUNK_USE_16MB_PAGE

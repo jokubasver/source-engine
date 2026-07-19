@@ -18,6 +18,7 @@ bool g_bInitMemory = true;
 #ifdef POSIX
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 void DoApplyMemoryInitializations( void *pMem, int nSize )
 {
@@ -63,6 +64,11 @@ void DoApplyMemoryInitializations( void *pMem, int nSize )
 
 size_t CalcHeapUsed()
 {
+	// Returns total process RSS (resident set size) from /proc/self/status.
+	// This is a coarse approximation — unlike the Windows version which walks
+	// the actual heap via _heapwalk(), this reflects all mapped pages including
+	// code, data, file-backed mappings, and GPU driver allocations. Useful for
+	// low-memory detection on 1GB-RAM devices but not a precise heap metric.
 	FILE *f = fopen( "/proc/self/status", "r" );
 	if ( !f )
 		return 0;

@@ -21,7 +21,7 @@
 #else // POSIX/Linux
 #include <sys/mman.h>
 #include <unistd.h>
-#define VA_COMMIT_FLAGS 0
+#define VA_COMMIT_FLAGS MEM_COMMIT
 #define VA_RESERVE_FLAGS MAP_ANONYMOUS | MAP_PRIVATE
 #endif
 
@@ -560,17 +560,15 @@ public:
 
 static void *PosixVirtualAlloc( void *pAddress, size_t nSize, uint32 dwFlags, uint32 dwProtect )
 {
-	void *pResult = mmap( pAddress, nSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0 );
-	if ( pResult == MAP_FAILED )
-		return NULL;
-
 	if ( dwFlags & MEM_COMMIT )
 	{
-		munmap( pResult, nSize );
-		pResult = mmap( pAddress ? pAddress : pResult, nSize, PROT_READ | PROT_WRITE, 
-		               MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
+		void *pResult = mmap( pAddress, nSize, PROT_READ | PROT_WRITE,
+		                     MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0 );
+		return ( pResult == MAP_FAILED ) ? NULL : pResult;
 	}
 
+	// MEM_RESERVE only — reserve address space without committing physical pages
+	void *pResult = mmap( pAddress, nSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0 );
 	return ( pResult == MAP_FAILED ) ? NULL : pResult;
 }
 
