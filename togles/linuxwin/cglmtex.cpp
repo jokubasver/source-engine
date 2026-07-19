@@ -77,7 +77,7 @@ int	sEncodeLayoutAsIndex( GLMTexLayoutKey *key )
 		index |= 2;
 	}
 
-	if (GetFormatDesc( key->m_texFormat )->m_chunkSize >1 )
+	if (GetFormatDesc( key->m_texFormat )->m_blockWidth >1 )
 	{
 		index |= 4;
 	}
@@ -103,51 +103,101 @@ const GLMTexFormatDesc g_formatDescTable[] =
 		// ??? D3DFMT_D15S1 ever used ?
 		// ??? D3DFMT_D24X8 ever used?
 
-	// summ-name		d3d-format				gl-int-format						gl-int-format-srgb					gl-data-format			gl-data-type					chunksize, bytes-per-sqchunk
-	{ "_D16",			D3DFMT_D16,				GL_DEPTH_COMPONENT16,				0,									GL_DEPTH_COMPONENT,		GL_UNSIGNED_SHORT,				1, 2 },
-	{ "_D24X8",			D3DFMT_D24X8,			GL_DEPTH_COMPONENT24,				0,									GL_DEPTH_COMPONENT,		GL_UNSIGNED_INT,				1, 4 },	// ??? unsure on this one
-	{ "_D24S8",			D3DFMT_D24S8,			GL_DEPTH24_STENCIL8_EXT,			0,									GL_DEPTH_STENCIL_EXT,	GL_UNSIGNED_INT_24_8_EXT,		1, 4 },
+	// summ-name		d3d-format				gl-int-format						gl-int-format-srgb					gl-data-format			gl-data-type					blockW	blockH	blockD	bytes/block
+	{ "_D16",			D3DFMT_D16,				GL_DEPTH_COMPONENT16,				0,									GL_DEPTH_COMPONENT,		GL_UNSIGNED_SHORT,				1,		1,		1,		2 },
+	{ "_D24X8",			D3DFMT_D24X8,			GL_DEPTH_COMPONENT24,				0,									GL_DEPTH_COMPONENT,		GL_UNSIGNED_INT,				1,		1,		1,		4 },	// ??? unsure on this one
+	{ "_D24S8",			D3DFMT_D24S8,			GL_DEPTH24_STENCIL8_EXT,			0,									GL_DEPTH_STENCIL_EXT,	GL_UNSIGNED_INT_24_8_EXT,		1,		1,		1,		4 },
 
-	{ "_A8R8G8B8",		D3DFMT_A8R8G8B8,		GL_RGBA8,							GL_SRGB8_ALPHA8_EXT,				GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1, 4 },
-	{ "_A4R4G4B4",		D3DFMT_A4R4G4B4,		GL_RGBA4,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_4_4_4_4_REV,	1, 2 },
-	{ "_X8R8G8B8",		D3DFMT_X8R8G8B8,		GL_RGB8,							GL_SRGB8_EXT,						GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1, 4 },
+	{ "_A8R8G8B8",		D3DFMT_A8R8G8B8,		GL_RGBA8,							GL_SRGB8_ALPHA8_EXT,				GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1,		1,		1,		4 },
+	{ "_A4R4G4B4",		D3DFMT_A4R4G4B4,		GL_RGBA4,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_4_4_4_4_REV,	1,		1,		1,		2 },
+	{ "_X8R8G8B8",		D3DFMT_X8R8G8B8,		GL_RGB8,							GL_SRGB8_EXT,						GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1,		1,		1,		4 },
 	
-	{ "_X1R5G5B5",		D3DFMT_X1R5G5B5,		GL_RGB5,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_1_5_5_5_REV,	1, 2 },
-	{ "_A1R5G5B5",		D3DFMT_A1R5G5B5,		GL_RGB5_A1,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_1_5_5_5_REV,	1, 2 },
+	{ "_X1R5G5B5",		D3DFMT_X1R5G5B5,		GL_RGB5,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_1_5_5_5_REV,	1,		1,		1,		2 },
+	{ "_A1R5G5B5",		D3DFMT_A1R5G5B5,		GL_RGB5_A1,							0,									GL_BGRA,				GL_UNSIGNED_SHORT_1_5_5_5_REV,	1,		1,		1,		2 },
 
-	{ "_L8",			D3DFMT_L8,				GL_LUMINANCE8,						GL_SLUMINANCE8_EXT,					GL_LUMINANCE,			GL_UNSIGNED_BYTE,				1, 1 },
-	{ "_A8L8",			D3DFMT_A8L8,			GL_LUMINANCE8_ALPHA8,				GL_SLUMINANCE8_ALPHA8_EXT,			GL_LUMINANCE_ALPHA,		GL_UNSIGNED_BYTE,				1, 2 },
+	{ "_L8",			D3DFMT_L8,				GL_LUMINANCE8,						GL_SLUMINANCE8_EXT,					GL_LUMINANCE,			GL_UNSIGNED_BYTE,				1,		1,		1,		1 },
+	{ "_A8L8",			D3DFMT_A8L8,			GL_LUMINANCE8_ALPHA8,				GL_SLUMINANCE8_ALPHA8_EXT,			GL_LUMINANCE_ALPHA,		GL_UNSIGNED_BYTE,				1,		1,		1,		2 },
 
-	{ "_DXT1",			D3DFMT_DXT1,			GL_COMPRESSED_RGB_S3TC_DXT1_EXT,	GL_COMPRESSED_SRGB_S3TC_DXT1_EXT,		GL_RGB,				GL_UNSIGNED_BYTE,				4, 8 },
-	{ "_DXT3",			D3DFMT_DXT3,			GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT,	GL_RGBA,			GL_UNSIGNED_BYTE,				4, 16 },
-	{ "_DXT5",			D3DFMT_DXT5,			GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT,	GL_RGBA,			GL_UNSIGNED_BYTE,				4, 16 },
+	{ "_DXT1",			D3DFMT_DXT1,			GL_COMPRESSED_RGB_S3TC_DXT1_EXT,	GL_COMPRESSED_SRGB_S3TC_DXT1_EXT,		GL_RGB,				GL_UNSIGNED_BYTE,				4,		4,		1,		8 },
+	{ "_DXT3",			D3DFMT_DXT3,			GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT,	GL_RGBA,			GL_UNSIGNED_BYTE,				4,		4,		1,		16 },
+	{ "_DXT5",			D3DFMT_DXT5,			GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT,	GL_RGBA,			GL_UNSIGNED_BYTE,				4,		4,		1,		16 },
 
-	{ "_A16B16G16R16F",	D3DFMT_A16B16G16R16F,	GL_RGBA16F_ARB,						0,									GL_RGBA,				GL_HALF_FLOAT_ARB,				1, 8 },
-	{ "_A16B16G16R16",	D3DFMT_A16B16G16R16,	GL_RGBA16,							0,									GL_RGBA,				GL_UNSIGNED_SHORT,				1, 8 },		// 16bpc integer tex
+	{ "_A16B16G16R16F",	D3DFMT_A16B16G16R16F,	GL_RGBA16F_ARB,						0,									GL_RGBA,				GL_HALF_FLOAT_ARB,				1,		1,		1,		8 },
+	{ "_A16B16G16R16",	D3DFMT_A16B16G16R16,	GL_RGBA16,							0,									GL_RGBA,				GL_UNSIGNED_SHORT,				1,		1,		1,		8 },		// 16bpc integer tex
 
-	{ "_A32B32G32R32F",	D3DFMT_A32B32G32R32F,	GL_RGBA32F_ARB,						0,									GL_RGBA,				GL_FLOAT,						1, 16 },
+	{ "_A32B32G32R32F",	D3DFMT_A32B32G32R32F,	GL_RGBA32F_ARB,						0,									GL_RGBA,				GL_FLOAT,						1,		1,		1,		16 },
 
-	{ "_R8G8B8",		D3DFMT_R8G8B8,			GL_RGB8,							GL_SRGB8_EXT,						GL_BGR,					GL_UNSIGNED_BYTE,				1, 3 },
+	{ "_R8G8B8",		D3DFMT_R8G8B8,			GL_RGB8,							GL_SRGB8_EXT,						GL_BGR,					GL_UNSIGNED_BYTE,				1,		1,		1,		3 },
 
-	{ "_A8",			D3DFMT_A8,				GL_ALPHA8,							0,									GL_ALPHA,				GL_UNSIGNED_BYTE,				1, 1 },
-	{ "_R5G6B5",		D3DFMT_R5G6B5,			GL_RGB,								GL_SRGB_EXT,						GL_RGB,					GL_UNSIGNED_SHORT_5_6_5,		1, 2 },
+	{ "_A8",			D3DFMT_A8,				GL_ALPHA8,							0,									GL_ALPHA,				GL_UNSIGNED_BYTE,				1,		1,		1,		1 },
+	{ "_R5G6B5",		D3DFMT_R5G6B5,			GL_RGB,								GL_SRGB_EXT,						GL_RGB,					GL_UNSIGNED_SHORT_5_6_5,		1,		1,		1,		2 },
 
 	// fakey tex formats: the stated GL format and the memory layout may not agree (U8V8 for example)
 	
 	// _Q8W8V8U8 we just pass through as RGBA bytes.  Shader does scale/bias fix
-	{ "_Q8W8V8U8",		D3DFMT_Q8W8V8U8,		GL_RGBA8,							0,									GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1, 4 },		// straight ripoff of D3DFMT_A8R8G8B8
+	{ "_Q8W8V8U8",		D3DFMT_Q8W8V8U8,		GL_RGBA8,							0,									GL_BGRA,				GL_UNSIGNED_INT_8_8_8_8_REV,	1,		1,		1,		4 },		// straight ripoff of D3DFMT_A8R8G8B8
 
 	// U8V8 is exposed to the client as 2-bytes per texel, but we download it as 3-byte RGB.
 	// WriteTexels needs to do that conversion from rg8 to rgb8 in order to be able to download it correctly
-	{ "_V8U8",			D3DFMT_V8U8,			GL_RGB8,							0,									GL_RG,					GL_BYTE,						1, 2 },
+	{ "_V8U8",			D3DFMT_V8U8,			GL_RGB8,							0,									GL_RG,					GL_BYTE,						1,		1,		1,		2 },
 	
-	{ "_R32F",			D3DFMT_R32F,			GL_R32F,							GL_R32F,							GL_RED,					GL_FLOAT,						1, 4 },
+	{ "_R32F",			D3DFMT_R32F,			GL_R32F,							GL_R32F,							GL_RED,					GL_FLOAT,						1,		1,		1,		4 },
 
-	// ASTC compressed format for ARM Mali GPUs (4x4 block, 16 bytes/block)
-	{ "_ASTC4x4",		D3DFMT_ASTC4x4,			0x93B0/*GL_COMPRESSED_RGBA_ASTC_4x4_KHR*/,	0x93D0/*GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR*/,	GL_RGBA,		GL_UNSIGNED_BYTE,				4, 16 },
+	// ASTC 2D LDR compressed formats (all blocks 16 bytes)
+	{ "_ASTC4x4",		D3DFMT_ASTC4x4,			0x93B0,	0x93D0,	GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	1,	16 },
+	{ "_ASTC5x4",		D3DFMT_ASTC5x4,			0x93B1,	0x93D1,	GL_RGBA,	GL_UNSIGNED_BYTE,	5,	4,	1,	16 },
+	{ "_ASTC5x5",		D3DFMT_ASTC5x5,			0x93B2,	0x93D2,	GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,1,	16 },
+	{ "_ASTC6x5",		D3DFMT_ASTC6x5,			0x93B3,	0x93D3,	GL_RGBA,	GL_UNSIGNED_BYTE,	6,	5,	1,	16 },
+	{ "_ASTC6x6",		D3DFMT_ASTC6x6,			0x93B4,	0x93D4,	GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	1,	16 },
+	{ "_ASTC8x5",		D3DFMT_ASTC8x5,			0x93B5,	0x93D5,	GL_RGBA,	GL_UNSIGNED_BYTE,	8,	5,	1,	16 },
+	{ "_ASTC8x6",		D3DFMT_ASTC8x6,			0x93B6,	0x93D6,	GL_RGBA,	GL_UNSIGNED_BYTE,	8,	6,	1,	16 },
+	{ "_ASTC8x8",		D3DFMT_ASTC8x8,			0x93B7,	0x93D7,	GL_RGBA,	GL_UNSIGNED_BYTE,	8,	8,	1,	16 },
+	{ "_ASTC10x5",		D3DFMT_ASTC10x5,		0x93B8,	0x93D8,	GL_RGBA,	GL_UNSIGNED_BYTE,	10,	5,	1,	16 },
+	{ "_ASTC10x6",		D3DFMT_ASTC10x6,		0x93B9,	0x93D9,	GL_RGBA,	GL_UNSIGNED_BYTE,	10,	6,	1,	16 },
+	{ "_ASTC10x8",		D3DFMT_ASTC10x8,		0x93BA,	0x93DA,	GL_RGBA,	GL_UNSIGNED_BYTE,	10,	8,	1,	16 },
+	{ "_ASTC10x10",		D3DFMT_ASTC10x10,		0x93BB,	0x93DB,	GL_RGBA,	GL_UNSIGNED_BYTE,	10,	10,	1,	16 },
+	{ "_ASTC12x10",		D3DFMT_ASTC12x10,		0x93BC,	0x93DC,	GL_RGBA,	GL_UNSIGNED_BYTE,	12,	10,	1,	16 },
+	{ "_ASTC12x12",		D3DFMT_ASTC12x12,		0x93BD,	0x93DD,	GL_RGBA,	GL_UNSIGNED_BYTE,	12,	12,	1,	16 },
 
-	// ASTC HDR compressed format for ARM Mali GPUs (4x4 block, 16 bytes/block, linear only)
-	{ "_ASTC4x4_HDR",	D3DFMT_ASTC4x4_HDR,		0x93B0/*GL_COMPRESSED_RGBA_ASTC_4x4_KHR*/,	0,													GL_RGBA,		GL_UNSIGNED_BYTE,				4, 16 },
+	// ASTC 2D HDR compressed formats
+	{ "_ASTC4x4_HDR",	D3DFMT_ASTC4x4_HDR,		0x93B0,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	1,	16 },
+	{ "_ASTC5x4_HDR",	D3DFMT_ASTC5x4_HDR,		0x93B1,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	5,	4,	1,	16 },
+	{ "_ASTC5x5_HDR",	D3DFMT_ASTC5x5_HDR,		0x93B2,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,1,	16 },
+	{ "_ASTC6x5_HDR",	D3DFMT_ASTC6x5_HDR,		0x93B3,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	6,	5,	1,	16 },
+	{ "_ASTC6x6_HDR",	D3DFMT_ASTC6x6_HDR,		0x93B4,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	1,	16 },
+	{ "_ASTC8x5_HDR",	D3DFMT_ASTC8x5_HDR,		0x93B5,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	8,	5,	1,	16 },
+	{ "_ASTC8x6_HDR",	D3DFMT_ASTC8x6_HDR,		0x93B6,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	8,	6,	1,	16 },
+	{ "_ASTC8x8_HDR",	D3DFMT_ASTC8x8_HDR,		0x93B7,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	8,	8,	1,	16 },
+	{ "_ASTC10x5_HDR",	D3DFMT_ASTC10x5_HDR,	0x93B8,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	10,	5,	1,	16 },
+	{ "_ASTC10x6_HDR",	D3DFMT_ASTC10x6_HDR,	0x93B9,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	10,	6,	1,	16 },
+	{ "_ASTC10x8_HDR",	D3DFMT_ASTC10x8_HDR,	0x93BA,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	10,	8,	1,	16 },
+	{ "_ASTC10x10_HDR",	D3DFMT_ASTC10x10_HDR,	0x93BB,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	10,	10,	1,	16 },
+	{ "_ASTC12x10_HDR",	D3DFMT_ASTC12x10_HDR,	0x93BC,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	12,	10,	1,	16 },
+	{ "_ASTC12x12_HDR",	D3DFMT_ASTC12x12_HDR,	0x93BD,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	12,	12,	1,	16 },
+
+	// ASTC 3D LDR compressed formats (OES profile, all blocks 16 bytes)
+	{ "_ASTC3x3x3",		D3DFMT_ASTC3x3x3,		0x93C0,	0x93E0,	GL_RGBA,	GL_UNSIGNED_BYTE,	3,	3,	3,	16 },
+	{ "_ASTC4x3x3",		D3DFMT_ASTC4x3x3,		0x93C1,	0x93E1,	GL_RGBA,	GL_UNSIGNED_BYTE,	4,	3,	3,	16 },
+	{ "_ASTC4x4x3",		D3DFMT_ASTC4x4x3,		0x93C2,	0x93E2,	GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	3,	16 },
+	{ "_ASTC4x4x4",		D3DFMT_ASTC4x4x4,		0x93C3,	0x93E3,	GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	4,	16 },
+	{ "_ASTC5x4x4",		D3DFMT_ASTC5x4x4,		0x93C4,	0x93E4,	GL_RGBA,	GL_UNSIGNED_BYTE,	5,	4,	4,	16 },
+	{ "_ASTC5x5x4",		D3DFMT_ASTC5x5x4,		0x93C5,	0x93E5,	GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,	4,	16 },
+	{ "_ASTC5x5x5",		D3DFMT_ASTC5x5x5,		0x93C6,	0x93E6,	GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,	5,	16 },
+	{ "_ASTC6x5x5",		D3DFMT_ASTC6x5x5,		0x93C7,	0x93E7,	GL_RGBA,	GL_UNSIGNED_BYTE,	6,	5,	5,	16 },
+	{ "_ASTC6x6x5",		D3DFMT_ASTC6x6x5,		0x93C8,	0x93E8,	GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	5,	16 },
+	{ "_ASTC6x6x6",		D3DFMT_ASTC6x6x6,		0x93C9,	0x93E9,	GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	6,	16 },
+
+	// ASTC 3D HDR compressed formats
+	{ "_ASTC3x3x3_HDR",	D3DFMT_ASTC3x3x3_HDR,	0x93C0,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	3,	3,	3,	16 },
+	{ "_ASTC4x3x3_HDR",	D3DFMT_ASTC4x3x3_HDR,	0x93C1,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	4,	3,	3,	16 },
+	{ "_ASTC4x4x3_HDR",	D3DFMT_ASTC4x4x3_HDR,	0x93C2,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	3,	16 },
+	{ "_ASTC4x4x4_HDR",	D3DFMT_ASTC4x4x4_HDR,	0x93C3,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	4,	4,	4,	16 },
+	{ "_ASTC5x4x4_HDR",	D3DFMT_ASTC5x4x4_HDR,	0x93C4,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	5,	4,	4,	16 },
+	{ "_ASTC5x5x4_HDR",	D3DFMT_ASTC5x5x4_HDR,	0x93C5,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,	4,	16 },
+	{ "_ASTC5x5x5_HDR",	D3DFMT_ASTC5x5x5_HDR,	0x93C6,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	5,	5,	5,	16 },
+	{ "_ASTC6x5x5_HDR",	D3DFMT_ASTC6x5x5_HDR,	0x93C7,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	6,	5,	5,	16 },
+	{ "_ASTC6x6x5_HDR",	D3DFMT_ASTC6x6x5_HDR,	0x93C8,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	5,	16 },
+	{ "_ASTC6x6x6_HDR",	D3DFMT_ASTC6x6x6_HDR,	0x93C9,	0,		GL_RGBA,	GL_UNSIGNED_BYTE,	6,	6,	6,	16 },
 
 //$ TODO: Need to merge bitmap changes over from Dota to get these formats.
 #if 0
@@ -412,10 +462,55 @@ bool	GLMGenTexels( GLMGenTexelParams *params )
 		
 		case D3DFMT_ASTC4x4:
 		case D3DFMT_ASTC4x4_HDR:
+		case D3DFMT_ASTC5x4:
+		case D3DFMT_ASTC5x4_HDR:
+		case D3DFMT_ASTC5x5:
+		case D3DFMT_ASTC5x5_HDR:
+		case D3DFMT_ASTC6x5:
+		case D3DFMT_ASTC6x5_HDR:
+		case D3DFMT_ASTC6x6:
+		case D3DFMT_ASTC6x6_HDR:
+		case D3DFMT_ASTC8x5:
+		case D3DFMT_ASTC8x5_HDR:
+		case D3DFMT_ASTC8x6:
+		case D3DFMT_ASTC8x6_HDR:
+		case D3DFMT_ASTC8x8:
+		case D3DFMT_ASTC8x8_HDR:
+		case D3DFMT_ASTC10x5:
+		case D3DFMT_ASTC10x5_HDR:
+		case D3DFMT_ASTC10x6:
+		case D3DFMT_ASTC10x6_HDR:
+		case D3DFMT_ASTC10x8:
+		case D3DFMT_ASTC10x8_HDR:
+		case D3DFMT_ASTC10x10:
+		case D3DFMT_ASTC10x10_HDR:
+		case D3DFMT_ASTC12x10:
+		case D3DFMT_ASTC12x10_HDR:
+		case D3DFMT_ASTC12x12:
+		case D3DFMT_ASTC12x12_HDR:
+		case D3DFMT_ASTC3x3x3:
+		case D3DFMT_ASTC3x3x3_HDR:
+		case D3DFMT_ASTC4x3x3:
+		case D3DFMT_ASTC4x3x3_HDR:
+		case D3DFMT_ASTC4x4x3:
+		case D3DFMT_ASTC4x4x3_HDR:
+		case D3DFMT_ASTC4x4x4:
+		case D3DFMT_ASTC4x4x4_HDR:
+		case D3DFMT_ASTC5x4x4:
+		case D3DFMT_ASTC5x4x4_HDR:
+		case D3DFMT_ASTC5x5x4:
+		case D3DFMT_ASTC5x5x4_HDR:
+		case D3DFMT_ASTC5x5x5:
+		case D3DFMT_ASTC5x5x5_HDR:
+		case D3DFMT_ASTC6x5x5:
+		case D3DFMT_ASTC6x5x5_HDR:
+		case D3DFMT_ASTC6x6x5:
+		case D3DFMT_ASTC6x6x5_HDR:
+		case D3DFMT_ASTC6x6x6:
+		case D3DFMT_ASTC6x6x6_HDR:
 		{
-			// ASTC 4x4 is a compressed format with no per-texel data to generate.
-			// The texture will be initialized via glCompressedTexImage2D from pre-generated data,
-			// so we just need to ensure chunksize matches the format table (16 bytes).
+			// All ASTC formats are compressed with no per-texel data to generate.
+			// All ASTC blocks are 16 bytes (128 bits) regardless of block dimensions.
 			chunksize = 16;
 		}
 		break;
@@ -436,7 +531,7 @@ bool	GLMGenTexels( GLMGenTexelParams *params )
 	// once the chunk buffer is filled..
 	
 	// sanity check the reported chunk size.
-	if (static_cast<int>(chunksize) != format->m_bytesPerSquareChunk)
+	if (static_cast<int>(chunksize) != format->m_bytesPerBlock)
 	{
 		DebuggerBreak();
 		return FALSE;
@@ -607,7 +702,7 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 		GLMTexLayoutSlice	*slicePtr = &layout->m_slices[0];
 		int					storageOffset = 0;
 		
-		//bool compressed = (formatDesc->m_chunkSize > 1);	// true if DXT
+		//bool compressed = (formatDesc->m_blockWidth > 1);	// true if DXT
 		
 		for( int mip = 0; mip < mipCount; mip ++ )
 		{
@@ -622,11 +717,11 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 				
 				slicePtr->m_xSize = layout->m_key.m_xSize >> mip;
 				slicePtr->m_xSize = MAX( slicePtr->m_xSize, 1 );				// dimension can't go to zero
-				storage_x = MAX( slicePtr->m_xSize, formatDesc->m_chunkSize );	// storage extent can't go below chunk size
+				storage_x = MAX( slicePtr->m_xSize, formatDesc->m_blockWidth );	// storage extent can't go below chunk size
 				
 				slicePtr->m_ySize = layout->m_key.m_ySize >> mip;
 				slicePtr->m_ySize = MAX( slicePtr->m_ySize, 1 );				// dimension can't go to zero
-				storage_y = MAX( slicePtr->m_ySize, formatDesc->m_chunkSize );	// storage extent can't go below chunk size
+				storage_y = MAX( slicePtr->m_ySize, formatDesc->m_blockHeight );	// storage extent can't go below block height
 				
 				slicePtr->m_zSize = layout->m_key.m_zSize >> mip;
 				slicePtr->m_zSize = MAX( slicePtr->m_zSize, 1 );				// dimension can't go to zero
@@ -639,10 +734,11 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 				//	slicePtr->m_ySize = (slicePtr->m_ySize+3) & (~3);
 				//}
 				
-				int xchunks = (storage_x / formatDesc->m_chunkSize );
-				int ychunks = (storage_y / formatDesc->m_chunkSize );
+			int xchunks = (storage_x + formatDesc->m_blockWidth - 1) / formatDesc->m_blockWidth;
+			int ychunks = (storage_y + formatDesc->m_blockHeight - 1) / formatDesc->m_blockHeight;
+			int zchunks = (storage_z + formatDesc->m_blockDepth - 1) / formatDesc->m_blockDepth;
 				
-				slicePtr->m_storageSize = (xchunks * ychunks * formatDesc->m_bytesPerSquareChunk) * storage_z;				
+				slicePtr->m_storageSize = (xchunks * ychunks * zchunks) * formatDesc->m_bytesPerBlock;
 				slicePtr->m_storageOffset = storageOffset;
 				
 				storageOffset += slicePtr->m_storageSize;
@@ -653,7 +749,7 @@ GLMTexLayout *CGLMTexLayoutTable::NewLayoutRef( GLMTexLayoutKey *pDesiredKey )
 		}
 		
 		layout->m_storageTotalSize = storageOffset;
-		//printf("\n size %08x for key (x=%d y=%d z=%d, fmt=%08x, bpsc=%d)", layout->m_storageTotalSize, key->m_xSize, key->m_ySize, key->m_zSize, key->m_texFormat, formatDesc->m_bytesPerSquareChunk );
+		//printf("\n size %08x for key (x=%d y=%d z=%d, fmt=%08x, bpsc=%d)", layout->m_storageTotalSize, key->m_xSize, key->m_ySize, key->m_zSize, key->m_texFormat, formatDesc->m_bytesPerBlock );
 		
 		// generate summary
 		// "target, format, +/- mips, base size"
@@ -958,7 +1054,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	
 	#if 0
 		bool pushRenderableSlices = (m_layout->m_key.m_texFlags & kGLMTexRenderable) != 0;
-		bool pushTexSlices = true;	// just do it everywhere  (m_layout->m_mipCount>1) && (m_layout->m_format->m_chunkSize !=1) ;
+		bool pushTexSlices = true;	// just do it everywhere  (m_layout->m_mipCount>1) && (m_layout->m_format->m_blockWidth !=1) ;
 		if (pushTexSlices)
 		{
 			// fill storage with mostly-opaque purple
@@ -970,7 +1066,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 			const GLMTexFormatDesc *format = GetFormatDesc( genp.m_format );
 			
 			genp.m_dest				= m_backing;		// dest addr
-			genp.m_chunkCount		= m_layout->m_storageTotalSize / format->m_bytesPerSquareChunk; // fill the whole slab
+			genp.m_chunkCount		= m_layout->m_storageTotalSize / format->m_bytesPerBlock; // fill the whole slab
 			genp.m_byteCountLimit	= m_layout->m_storageTotalSize;	// limit writes to this amount
 
 			genp.r = 1.0;
@@ -983,7 +1079,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	#endif
 	
 	//if (pushRenderableSlices || pushTexSlices)
-	if ( (layout->m_format->m_chunkSize == 1) && !( ( layout->m_key.m_texFlags & kGLMTexMipped ) && ( levels == ( unsigned ) m_layout->m_mipCount ) ) )
+	if ( (layout->m_format->m_blockWidth == 1 && layout->m_format->m_blockHeight == 1) && !( ( layout->m_key.m_texFlags & kGLMTexMipped ) && ( levels == ( unsigned ) m_layout->m_mipCount ) ) )
 	{
 		// For textures created with kGLMTexMippedAuto (D3DUSAGE_AUTOGENMIPMAP) the engine only uploads
 		// mip 0 (D3D forbids locking higher levels on auto-mipmap textures), and the upper mips are
@@ -1131,43 +1227,43 @@ void CGLMTex::CalcTexelDataOffsetAndStrides( int sliceIndex, int x, int y, int z
 	int zStride = 0;
 	
 	GLMTexFormatDesc *format = m_layout->m_format;
-	if (format->m_chunkSize==1)	
+	if (format->m_blockWidth == 1 && format->m_blockHeight == 1)	
 	{
 		// figure out row stride and layer stride
-		yStride = format->m_bytesPerSquareChunk * m_layout->m_slices[sliceIndex].m_xSize;	// bytes per texel row (y stride)
+		yStride = format->m_bytesPerBlock * m_layout->m_slices[sliceIndex].m_xSize;	// bytes per texel row (y stride)
 		zStride = yStride * m_layout->m_slices[sliceIndex].m_ySize;							// bytes per texel layer (if 3D tex)
 		
-		offset = x * format->m_bytesPerSquareChunk;		// lateral offset
+		offset = x * format->m_bytesPerBlock;		// lateral offset
 		offset += (y * yStride);							// scanline offset
 		offset += (z * zStride);							// should be zero for 2D tex
 	}
 	else
 	{
-		yStride = format->m_bytesPerSquareChunk * (m_layout->m_slices[sliceIndex].m_xSize / format->m_chunkSize);
-		zStride = yStride * (m_layout->m_slices[sliceIndex].m_ySize / format->m_chunkSize);
+		yStride = format->m_bytesPerBlock * ((m_layout->m_slices[sliceIndex].m_xSize + format->m_blockWidth - 1) / format->m_blockWidth);
+		zStride = yStride * ((m_layout->m_slices[sliceIndex].m_ySize + format->m_blockHeight - 1) / format->m_blockHeight);
 		
 		// compressed format.  scale the x,y,z values into chunks.
 		// assert if any of them are not multiples of a chunk.
-		int chunkx = x / format->m_chunkSize;
-		int chunky = y / format->m_chunkSize;
-		int chunkz = z / format->m_chunkSize;
+		int chunkx = x / format->m_blockWidth;
+		int chunky = y / format->m_blockHeight;
+		int chunkz = z / format->m_blockDepth;
 		
-		if ( (chunkx * format->m_chunkSize) != x)
+		if ( (chunkx * format->m_blockWidth) != x)
 		{
 			GLMStop();
 		}
 		
-		if ( (chunky * format->m_chunkSize) != y)
+		if ( (chunky * format->m_blockHeight) != y)
 		{
 			GLMStop();
 		}
 		
-		if ( (chunkz * format->m_chunkSize) != z)
+		if ( (chunkz * format->m_blockDepth) != z)
 		{
 			GLMStop();
 		}
 		
-		offset = chunkx * format->m_bytesPerSquareChunk;	// lateral offset
+		offset = chunkx * format->m_bytesPerBlock;	// lateral offset
 		offset += (chunky * yStride);						// chunk row offset
 		offset += (chunkz * zStride);						// should be zero for 2D tex		
 	}
@@ -3553,7 +3649,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		case GL_TEXTURE_2D:
 		{
 			// check compressed or not
-			if (format->m_chunkSize != 1)
+			if (format->m_blockWidth != 1 || format->m_blockHeight != 1)
 			{
 				Assert( writeWholeSlice );	//subimage not implemented in this path yet
 				// compressed path
@@ -3639,7 +3735,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		case GL_TEXTURE_3D:
 		{
 			// check compressed or not
-			if (format->m_chunkSize != 1)
+			if (format->m_blockWidth != 1 || format->m_blockHeight != 1)
 			{
 				// compressed path
 				// http://www.opengl.org/sdk/docs/man/xhtml/glCompressedTexImage3D.xml

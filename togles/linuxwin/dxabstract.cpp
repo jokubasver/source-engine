@@ -1384,6 +1384,84 @@ HRESULT IDirect3D9::CheckDeviceFormat(UINT Adapter,D3DDEVTYPE DeviceType,D3DFORM
 													}
 						break;
 
+						// 2D ASTC LDR formats (all remaining block sizes).
+						case D3DFMT_ASTC5x4:
+						case D3DFMT_ASTC5x5:
+						case D3DFMT_ASTC6x5:
+						case D3DFMT_ASTC6x6:
+						case D3DFMT_ASTC8x5:
+						case D3DFMT_ASTC8x6:
+						case D3DFMT_ASTC8x8:
+						case D3DFMT_ASTC10x5:
+						case D3DFMT_ASTC10x6:
+						case D3DFMT_ASTC10x8:
+						case D3DFMT_ASTC10x10:
+						case D3DFMT_ASTC12x10:
+						case D3DFMT_ASTC12x12:
+													if ( gGL->m_bHave_GL_KHR_texture_compression_astc_ldr ||
+														 gGL->m_bHave_GL_KHR_texture_compression_astc_hdr )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+														legalUsage	|=	D3DUSAGE_QUERY_SRGBREAD;
+													}
+						break;
+
+						// 3D ASTC LDR formats (full profile required).
+						case D3DFMT_ASTC3x3x3:
+						case D3DFMT_ASTC4x3x3:
+						case D3DFMT_ASTC4x4x3:
+						case D3DFMT_ASTC4x4x4:
+						case D3DFMT_ASTC5x4x4:
+						case D3DFMT_ASTC5x5x4:
+						case D3DFMT_ASTC5x5x5:
+						case D3DFMT_ASTC6x5x5:
+						case D3DFMT_ASTC6x6x5:
+						case D3DFMT_ASTC6x6x6:
+													if ( gGL->m_bHave_GL_OES_texture_compression_astc )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+														legalUsage	|=	D3DUSAGE_QUERY_SRGBREAD;
+													}
+						break;
+
+						// 2D ASTC HDR formats (all remaining block sizes).
+						case D3DFMT_ASTC5x4_HDR:
+						case D3DFMT_ASTC5x5_HDR:
+						case D3DFMT_ASTC6x5_HDR:
+						case D3DFMT_ASTC6x6_HDR:
+						case D3DFMT_ASTC8x5_HDR:
+						case D3DFMT_ASTC8x6_HDR:
+						case D3DFMT_ASTC8x8_HDR:
+						case D3DFMT_ASTC10x5_HDR:
+						case D3DFMT_ASTC10x6_HDR:
+						case D3DFMT_ASTC10x8_HDR:
+						case D3DFMT_ASTC10x10_HDR:
+						case D3DFMT_ASTC12x10_HDR:
+						case D3DFMT_ASTC12x12_HDR:
+													if ( gGL->m_bHave_GL_KHR_texture_compression_astc_hdr )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+													}
+						break;
+
+						// 3D ASTC HDR formats (full profile + HDR extension required).
+						case D3DFMT_ASTC3x3x3_HDR:
+						case D3DFMT_ASTC4x3x3_HDR:
+						case D3DFMT_ASTC4x4x3_HDR:
+						case D3DFMT_ASTC4x4x4_HDR:
+						case D3DFMT_ASTC5x4x4_HDR:
+						case D3DFMT_ASTC5x5x4_HDR:
+						case D3DFMT_ASTC5x5x5_HDR:
+						case D3DFMT_ASTC6x5x5_HDR:
+						case D3DFMT_ASTC6x6x5_HDR:
+						case D3DFMT_ASTC6x6x6_HDR:
+													if ( gGL->m_bHave_GL_OES_texture_compression_astc &&
+														 gGL->m_bHave_GL_KHR_texture_compression_astc_hdr )
+													{
+														legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
+													}
+						break;
+
 						case D3DFMT_A8R8G8B8:		legalUsage	=	D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_QUERY_FILTER;
 													legalUsage |=	D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_SRGBREAD | D3DUSAGE_QUERY_SRGBWRITE | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING;
 						break;

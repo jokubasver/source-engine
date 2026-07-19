@@ -90,6 +90,7 @@ def build(bld):
 		install_path = install_path,
 		subsystem = bld.env.MSVC_SUBSYSTEM,
 		cflags   = togl_cflags,
+		cxxflags = togl_cflags,
 		linkflags = togl_linkflags,
 		idx      = bld.get_taskgen_count()
 	)

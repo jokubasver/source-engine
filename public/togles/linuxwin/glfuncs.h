@@ -262,6 +262,9 @@ GL_EXT( GL_EXT_texture_filter_anisotropic, -1, -1 )
 // with GL_COMPRESSED_RGBA_ASTC_4x4_KHR fails and the texture uploads as black (fade to black at distance).
 GL_EXT( GL_KHR_texture_compression_astc_ldr, -1, -1 )
 GL_EXT( GL_KHR_texture_compression_astc_hdr, -1, -1 )
+// Full ASTC profile including 3D textures (OES_texture_compression_astc).
+// Required for COMPRESSED_RGBA_ASTC_*x*x*_OES 3D formats.
+GL_EXT( GL_OES_texture_compression_astc, -1, -1 )
 GL_FUNC_VOID( GL_EXT_buffer_storage, false, glBufferStorageEXT, (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags), (target, size, data, flags) )
 
 // GL_ARM_shader_framebuffer_fetch / GL_EXT_shader_framebuffer_fetch

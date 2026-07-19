@@ -399,6 +399,78 @@ inline bool IsMultipleOf4( int value )
 	return ( value <= 2 ) || ( (value & 0x3) == 0 );
 }
 
+inline void GetASTCBlockDimensions( ImageFormat fmt, int &bw, int &bh )
+{
+	switch ( fmt )
+	{
+	case IMAGE_FORMAT_ASTC4x4:
+	case IMAGE_FORMAT_ASTC4x4_HDR:
+	case IMAGE_FORMAT_ASTC4x4x3:
+	case IMAGE_FORMAT_ASTC4x4x3_HDR:
+	case IMAGE_FORMAT_ASTC4x4x4:
+	case IMAGE_FORMAT_ASTC4x4x4_HDR:
+		bw = 4; bh = 4; break;
+	case IMAGE_FORMAT_ASTC5x4:
+	case IMAGE_FORMAT_ASTC5x4_HDR:
+	case IMAGE_FORMAT_ASTC5x4x4:
+	case IMAGE_FORMAT_ASTC5x4x4_HDR:
+		bw = 5; bh = 4; break;
+	case IMAGE_FORMAT_ASTC5x5:
+	case IMAGE_FORMAT_ASTC5x5_HDR:
+	case IMAGE_FORMAT_ASTC5x5x4:
+	case IMAGE_FORMAT_ASTC5x5x4_HDR:
+	case IMAGE_FORMAT_ASTC5x5x5:
+	case IMAGE_FORMAT_ASTC5x5x5_HDR:
+		bw = 5; bh = 5; break;
+	case IMAGE_FORMAT_ASTC6x5:
+	case IMAGE_FORMAT_ASTC6x5_HDR:
+	case IMAGE_FORMAT_ASTC6x5x5:
+	case IMAGE_FORMAT_ASTC6x5x5_HDR:
+		bw = 6; bh = 5; break;
+	case IMAGE_FORMAT_ASTC6x6:
+	case IMAGE_FORMAT_ASTC6x6_HDR:
+	case IMAGE_FORMAT_ASTC6x6x5:
+	case IMAGE_FORMAT_ASTC6x6x5_HDR:
+	case IMAGE_FORMAT_ASTC6x6x6:
+	case IMAGE_FORMAT_ASTC6x6x6_HDR:
+		bw = 6; bh = 6; break;
+	case IMAGE_FORMAT_ASTC8x5:
+	case IMAGE_FORMAT_ASTC8x5_HDR:
+		bw = 8; bh = 5; break;
+	case IMAGE_FORMAT_ASTC8x6:
+	case IMAGE_FORMAT_ASTC8x6_HDR:
+		bw = 8; bh = 6; break;
+	case IMAGE_FORMAT_ASTC8x8:
+	case IMAGE_FORMAT_ASTC8x8_HDR:
+		bw = 8; bh = 8; break;
+	case IMAGE_FORMAT_ASTC10x5:
+	case IMAGE_FORMAT_ASTC10x5_HDR:
+		bw = 10; bh = 5; break;
+	case IMAGE_FORMAT_ASTC10x6:
+	case IMAGE_FORMAT_ASTC10x6_HDR:
+		bw = 10; bh = 6; break;
+	case IMAGE_FORMAT_ASTC10x8:
+	case IMAGE_FORMAT_ASTC10x8_HDR:
+		bw = 10; bh = 8; break;
+	case IMAGE_FORMAT_ASTC10x10:
+	case IMAGE_FORMAT_ASTC10x10_HDR:
+		bw = 10; bh = 10; break;
+	case IMAGE_FORMAT_ASTC12x10:
+	case IMAGE_FORMAT_ASTC12x10_HDR:
+		bw = 12; bh = 10; break;
+	case IMAGE_FORMAT_ASTC12x12:
+	case IMAGE_FORMAT_ASTC12x12_HDR:
+		bw = 12; bh = 12; break;
+	case IMAGE_FORMAT_ASTC3x3x3:
+	case IMAGE_FORMAT_ASTC3x3x3_HDR:
+		bw = 3; bh = 3; break;
+	case IMAGE_FORMAT_ASTC4x3x3:
+	case IMAGE_FORMAT_ASTC4x3x3_HDR:
+		bw = 4; bh = 3; break;
+	default:
+		bw = 4; bh = 4; break;
+	}
+}
 
 //-----------------------------------------------------------------------------
 // Initialization
@@ -425,12 +497,22 @@ bool CVTFTexture::Init( int nWidth, int nHeight, int nDepth, ImageFormat fmt, in
 	}
 
 	if ( ( fmt == IMAGE_FORMAT_DXT1 ) || ( fmt == IMAGE_FORMAT_DXT3 ) || ( fmt == IMAGE_FORMAT_DXT5 ) ||
-		 ( fmt == IMAGE_FORMAT_DXT1_RUNTIME ) || ( fmt == IMAGE_FORMAT_DXT5_RUNTIME ) ||
-		 ( fmt == IMAGE_FORMAT_ASTC4x4 ) || ( fmt == IMAGE_FORMAT_ASTC4x4_HDR ) )
+		 ( fmt == IMAGE_FORMAT_DXT1_RUNTIME ) || ( fmt == IMAGE_FORMAT_DXT5_RUNTIME ) )
 	{
 		if ( !IsMultipleOf4( nWidth ) || !IsMultipleOf4( nHeight ) || !IsMultipleOf4( nDepth ) )
 		{
 			Warning( "Image dimensions must be multiple of 4!\n" );
+			return false;
+		}
+	}
+
+	if ( ImageLoader::IsASTC( fmt ) )
+	{
+		int bw, bh;
+		GetASTCBlockDimensions( fmt, bw, bh );
+		if ( ( nWidth % bw != 0 ) || ( nHeight % bh != 0 ) )
+		{
+			Warning( "ASTC: dimensions must be multiples of %dx%d!\n", bw, bh );
 			return false;
 		}
 	}

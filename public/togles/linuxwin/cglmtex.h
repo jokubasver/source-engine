@@ -80,9 +80,10 @@ struct GLMTexFormatDesc
 	GLenum		m_glDataFormat;		// GL data format
 	GLenum		m_glDataType;		// GL data type
 	
-	int			m_chunkSize;		// 1 or 4 - 4 is used for compressed textures
-	int			m_bytesPerSquareChunk;	// how many bytes for the smallest quantum (m_chunkSize x m_chunkSize)
-									// this description lets us calculate size cleanly without conditional logic for compression
+	int			m_blockWidth;		// block width in texels (1 for uncompressed, 4 for DXT/ASTC 4x4, etc.)
+	int			m_blockHeight;		// block height in texels
+	int			m_blockDepth;		// block depth in texels (1 for 2D textures, 3-6 for 3D ASTC)
+	int			m_bytesPerBlock;	// bytes per compressed block (16 for ASTC/DXT3/DXT5, 8 for DXT1, etc.)
 };
 const GLMTexFormatDesc *GetFormatDesc( D3DFORMAT format );
 

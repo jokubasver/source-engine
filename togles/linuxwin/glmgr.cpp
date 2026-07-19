@@ -4643,6 +4643,7 @@ void GLMContext::GenDebugFontTex( void )
 		lockreq.m_region.zmax = slice->m_zSize;
 
 		lockreq.m_readback = false;
+		lockreq.m_readonly = false;
 		
 		char	*lockAddress;
 		int		yStride;
@@ -5699,7 +5700,7 @@ void GLMTester::Test0( void )
 
 										gtp.m_format			=	ptex->m_layout->m_format->m_d3dFormat;
 										gtp.m_dest				=	lockAddress;
-										gtp.m_chunkCount		=	(slice->m_xSize * slice->m_ySize * slice->m_zSize) / (ptex->m_layout->m_format->m_chunkSize * ptex->m_layout->m_format->m_chunkSize);
+										gtp.m_chunkCount		=	((slice->m_xSize + ptex->m_layout->m_format->m_blockWidth - 1) / ptex->m_layout->m_format->m_blockWidth) * ((slice->m_ySize + ptex->m_layout->m_format->m_blockHeight - 1) / ptex->m_layout->m_format->m_blockHeight) * ((slice->m_zSize + MAX(ptex->m_layout->m_format->m_blockDepth, 1) - 1) / MAX(ptex->m_layout->m_format->m_blockDepth, 1));
 										gtp.m_byteCountLimit	=	slice->m_storageSize;
 										gtp.r = 0.75;
 										gtp.g = 0.40;
