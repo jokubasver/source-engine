@@ -37,3 +37,6 @@ waf3*/
 .vscode/
 .depproj/
 source-engine.sln
+/portal_astc
+/hl2_astc
+astcenc.exe

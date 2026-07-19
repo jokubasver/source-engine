@@ -37,6 +37,148 @@ except ImportError:
 IMAGE_FORMAT_ASTC4x4 = 41
 IMAGE_FORMAT_ASTC4x4_HDR = 42
 
+# 2D ASTC LDR
+IMAGE_FORMAT_ASTC5x4 = 43
+IMAGE_FORMAT_ASTC5x5 = 44
+IMAGE_FORMAT_ASTC6x5 = 45
+IMAGE_FORMAT_ASTC6x6 = 46
+IMAGE_FORMAT_ASTC8x5 = 47
+IMAGE_FORMAT_ASTC8x6 = 48
+IMAGE_FORMAT_ASTC8x8 = 49
+IMAGE_FORMAT_ASTC10x5 = 50
+IMAGE_FORMAT_ASTC10x6 = 51
+IMAGE_FORMAT_ASTC10x8 = 52
+IMAGE_FORMAT_ASTC10x10 = 53
+IMAGE_FORMAT_ASTC12x10 = 54
+IMAGE_FORMAT_ASTC12x12 = 55
+
+# 3D ASTC LDR
+IMAGE_FORMAT_ASTC3x3x3 = 56
+IMAGE_FORMAT_ASTC4x3x3 = 57
+IMAGE_FORMAT_ASTC4x4x3 = 58
+IMAGE_FORMAT_ASTC4x4x4 = 59
+IMAGE_FORMAT_ASTC5x4x4 = 60
+IMAGE_FORMAT_ASTC5x5x4 = 61
+IMAGE_FORMAT_ASTC5x5x5 = 62
+IMAGE_FORMAT_ASTC6x5x5 = 63
+IMAGE_FORMAT_ASTC6x6x5 = 64
+IMAGE_FORMAT_ASTC6x6x6 = 65
+
+# 2D ASTC HDR
+IMAGE_FORMAT_ASTC5x4_HDR = 66
+IMAGE_FORMAT_ASTC5x5_HDR = 67
+IMAGE_FORMAT_ASTC6x5_HDR = 68
+IMAGE_FORMAT_ASTC6x6_HDR = 69
+IMAGE_FORMAT_ASTC8x5_HDR = 70
+IMAGE_FORMAT_ASTC8x6_HDR = 71
+IMAGE_FORMAT_ASTC8x8_HDR = 72
+IMAGE_FORMAT_ASTC10x5_HDR = 73
+IMAGE_FORMAT_ASTC10x6_HDR = 74
+IMAGE_FORMAT_ASTC10x8_HDR = 75
+IMAGE_FORMAT_ASTC10x10_HDR = 76
+IMAGE_FORMAT_ASTC12x10_HDR = 77
+IMAGE_FORMAT_ASTC12x12_HDR = 78
+
+# 3D ASTC HDR
+IMAGE_FORMAT_ASTC3x3x3_HDR = 79
+IMAGE_FORMAT_ASTC4x3x3_HDR = 80
+IMAGE_FORMAT_ASTC4x4x3_HDR = 81
+IMAGE_FORMAT_ASTC4x4x4_HDR = 82
+IMAGE_FORMAT_ASTC5x4x4_HDR = 83
+IMAGE_FORMAT_ASTC5x5x4_HDR = 84
+IMAGE_FORMAT_ASTC5x5x5_HDR = 85
+IMAGE_FORMAT_ASTC6x5x5_HDR = 86
+IMAGE_FORMAT_ASTC6x6x5_HDR = 87
+IMAGE_FORMAT_ASTC6x6x6_HDR = 88
+
+# All known ASTC format values (for detecting already-compressed textures)
+ALL_ASTC_FORMATS = {
+    IMAGE_FORMAT_ASTC4x4, IMAGE_FORMAT_ASTC4x4_HDR,
+    IMAGE_FORMAT_ASTC5x4, IMAGE_FORMAT_ASTC5x4_HDR,
+    IMAGE_FORMAT_ASTC5x5, IMAGE_FORMAT_ASTC5x5_HDR,
+    IMAGE_FORMAT_ASTC6x5, IMAGE_FORMAT_ASTC6x5_HDR,
+    IMAGE_FORMAT_ASTC6x6, IMAGE_FORMAT_ASTC6x6_HDR,
+    IMAGE_FORMAT_ASTC8x5, IMAGE_FORMAT_ASTC8x5_HDR,
+    IMAGE_FORMAT_ASTC8x6, IMAGE_FORMAT_ASTC8x6_HDR,
+    IMAGE_FORMAT_ASTC8x8, IMAGE_FORMAT_ASTC8x8_HDR,
+    IMAGE_FORMAT_ASTC10x5, IMAGE_FORMAT_ASTC10x5_HDR,
+    IMAGE_FORMAT_ASTC10x6, IMAGE_FORMAT_ASTC10x6_HDR,
+    IMAGE_FORMAT_ASTC10x8, IMAGE_FORMAT_ASTC10x8_HDR,
+    IMAGE_FORMAT_ASTC10x10, IMAGE_FORMAT_ASTC10x10_HDR,
+    IMAGE_FORMAT_ASTC12x10, IMAGE_FORMAT_ASTC12x10_HDR,
+    IMAGE_FORMAT_ASTC12x12, IMAGE_FORMAT_ASTC12x12_HDR,
+    IMAGE_FORMAT_ASTC3x3x3, IMAGE_FORMAT_ASTC3x3x3_HDR,
+    IMAGE_FORMAT_ASTC4x3x3, IMAGE_FORMAT_ASTC4x3x3_HDR,
+    IMAGE_FORMAT_ASTC4x4x3, IMAGE_FORMAT_ASTC4x4x3_HDR,
+    IMAGE_FORMAT_ASTC4x4x4, IMAGE_FORMAT_ASTC4x4x4_HDR,
+    IMAGE_FORMAT_ASTC5x4x4, IMAGE_FORMAT_ASTC5x4x4_HDR,
+    IMAGE_FORMAT_ASTC5x5x4, IMAGE_FORMAT_ASTC5x5x4_HDR,
+    IMAGE_FORMAT_ASTC5x5x5, IMAGE_FORMAT_ASTC5x5x5_HDR,
+    IMAGE_FORMAT_ASTC6x5x5, IMAGE_FORMAT_ASTC6x5x5_HDR,
+    IMAGE_FORMAT_ASTC6x6x5, IMAGE_FORMAT_ASTC6x6x5_HDR,
+    IMAGE_FORMAT_ASTC6x6x6, IMAGE_FORMAT_ASTC6x6x6_HDR,
+}
+
+# Source format -> bitrate tier mapping (per Khronos spec Table C.2.2 and
+# ARM ASTC encoder format equivalence guide).
+#
+# Each tier targets the ASTC block size whose bitrate most closely matches
+# the source format's bits-per-pixel:
+#   ~4 bpp  -> 6x5  (4.27 bpp)
+#   ~8 bpp  -> 5x4  (6.40 bpp)
+#   ~32 bpp -> 5x5  (5.12 bpp)
+#   HDR     -> 4x4  (8.00 bpp, only HDR-capable ASTC)
+
+# ~4 bpp: DXT1, 1-bit alpha, grayscale, 16-bit RGB
+ASTC_FORMATS_4BPP = {
+    vtfpp.ImageFormat.DXT1,
+    vtfpp.ImageFormat.DXT1_ONE_BIT_ALPHA,
+    vtfpp.ImageFormat.RGB565,
+    vtfpp.ImageFormat.I8,
+    vtfpp.ImageFormat.P8,
+}
+
+# ~8 bpp: DXT3/DXT5, BC4/BC5 analogs, luminance+alpha, alpha-only
+ASTC_FORMATS_8BPP = {
+    vtfpp.ImageFormat.DXT5,
+    vtfpp.ImageFormat.DXT3,
+    vtfpp.ImageFormat.ATI1N,
+    vtfpp.ImageFormat.ATI2N,
+    vtfpp.ImageFormat.IA88,
+    vtfpp.ImageFormat.A8,
+}
+
+# ~32 bpp: Uncompressed color
+ASTC_FORMATS_32BPP = {
+    vtfpp.ImageFormat.RGBA8888,
+    vtfpp.ImageFormat.ABGR8888,
+    vtfpp.ImageFormat.BGRA8888,
+    vtfpp.ImageFormat.ARGB8888,
+    vtfpp.ImageFormat.BGRX8888,
+    vtfpp.ImageFormat.RGB888,
+    vtfpp.ImageFormat.BGR888,
+    vtfpp.ImageFormat.RGB888_BLUESCREEN,
+    vtfpp.ImageFormat.BGR888_BLUESCREEN,
+    vtfpp.ImageFormat.BGRA4444,
+    vtfpp.ImageFormat.BGRA5551,
+    vtfpp.ImageFormat.BGRX5551,
+    vtfpp.ImageFormat.BGR565,
+    vtfpp.ImageFormat.RGBX8888,
+    vtfpp.ImageFormat.UVWQ8888,
+    vtfpp.ImageFormat.UVLX8888,
+}
+
+# HDR formats (floating-point, need ASTC HDR profile)
+ASTC_FORMATS_HDR = {
+    vtfpp.ImageFormat.RGBA16161616F,
+    vtfpp.ImageFormat.RGB323232F,
+    vtfpp.ImageFormat.RGBA32323232F,
+    vtfpp.ImageFormat.R32F,
+    vtfpp.ImageFormat.R16F,
+    vtfpp.ImageFormat.RG1616F,
+    vtfpp.ImageFormat.RG3232F,
+}
+
 TEXTUREFLAGS_SRGB = 0x00000040
 TEXTUREFLAGS_NORMAL = 0x00000080
 TEXTUREFLAGS_SSBUMP = 0x08000000
@@ -122,6 +264,84 @@ def is_srgb_texture(vtf, file_name):
     if any(name.endswith(s) for s in NON_SRGB_SUFFIXES):
         return False
     return True
+
+
+# Block size -> bits-per-texel mapping
+ASTC_BLOCK_BPP = {
+    '4x4': 8.00, '5x4': 6.40, '5x5': 5.12, '6x5': 4.27,
+    '6x6': 3.56, '8x5': 3.20, '8x6': 2.67, '8x8': 2.00,
+    '10x5': 2.56, '10x6': 2.13, '10x8': 1.60, '10x10': 1.28,
+    '12x10': 1.07, '12x12': 0.89,
+}
+
+# Map block dimensions to IMAGE_FORMAT values
+ASTC_LDR_FORMATS = {
+    (4, 4): IMAGE_FORMAT_ASTC4x4, (5, 4): IMAGE_FORMAT_ASTC5x4,
+    (5, 5): IMAGE_FORMAT_ASTC5x5, (6, 5): IMAGE_FORMAT_ASTC6x5,
+    (6, 6): IMAGE_FORMAT_ASTC6x6, (8, 5): IMAGE_FORMAT_ASTC8x5,
+    (8, 6): IMAGE_FORMAT_ASTC8x6, (8, 8): IMAGE_FORMAT_ASTC8x8,
+    (10, 5): IMAGE_FORMAT_ASTC10x5, (10, 6): IMAGE_FORMAT_ASTC10x6,
+    (10, 8): IMAGE_FORMAT_ASTC10x8, (10, 10): IMAGE_FORMAT_ASTC10x10,
+    (12, 10): IMAGE_FORMAT_ASTC12x10, (12, 12): IMAGE_FORMAT_ASTC12x12,
+}
+ASTC_HDR_FORMATS = {
+    (4, 4): IMAGE_FORMAT_ASTC4x4_HDR, (5, 4): IMAGE_FORMAT_ASTC5x4_HDR,
+    (5, 5): IMAGE_FORMAT_ASTC5x5_HDR, (6, 5): IMAGE_FORMAT_ASTC6x5_HDR,
+    (6, 6): IMAGE_FORMAT_ASTC6x6_HDR, (8, 5): IMAGE_FORMAT_ASTC8x5_HDR,
+    (8, 6): IMAGE_FORMAT_ASTC8x6_HDR, (8, 8): IMAGE_FORMAT_ASTC8x8_HDR,
+    (10, 5): IMAGE_FORMAT_ASTC10x5_HDR, (10, 6): IMAGE_FORMAT_ASTC10x6_HDR,
+    (10, 8): IMAGE_FORMAT_ASTC10x8_HDR, (10, 10): IMAGE_FORMAT_ASTC10x10_HDR,
+    (12, 10): IMAGE_FORMAT_ASTC12x10_HDR, (12, 12): IMAGE_FORMAT_ASTC12x12_HDR,
+}
+
+def select_astc_block_size(vtf, file_name):
+    """Select best ASTC block size based on source format and texture properties.
+
+    Maps source format to equivalent ASTC quality tier per Khronos spec
+    Table C.2.2 and ARM ASTC encoder format equivalence guide:
+      - HDR formats         -> 4x4 HDR (8 bpp, only HDR-capable ASTC)
+      - Normal/SSBump maps  -> 4x4 (8 bpp, dual-plane for XY channels)
+      - ~4 bpp sources      -> 6x5 (4.27 bpp, closest bitrate match)
+      - ~8 bpp sources      -> 5x4 (6.40 bpp, preserves alpha quality)
+      - ~32 bpp sources     -> 5x5 (5.12 bpp, best balance)
+      - Small textures      -> capped at 6x6 to avoid padding waste
+    """
+    is_normal = bool(int(vtf.flags) & TEXTUREFLAGS_NORMAL)
+    is_ssbumper = bool(int(vtf.flags) & TEXTUREFLAGS_SSBUMP)
+    fmt = vtf.format
+    name_lower = os.path.splitext(os.path.basename(file_name))[0].lower()
+
+    # Filename-based overrides (secondary hints, checked first)
+    if is_normal or is_ssbumper or name_lower.endswith('_normal') or name_lower.endswith('_nrm'):
+        return '4x4'
+
+    # HDR always -> 4x4 (only viable HDR ASTC block size)
+    if fmt in ASTC_FORMATS_HDR:
+        return '4x4'
+
+    # Source format -> bitrate tier -> ASTC block size
+    if fmt in ASTC_FORMATS_4BPP:
+        block = '6x5'    # 4.27 bpp (closest to ~4 bpp source)
+    elif fmt in ASTC_FORMATS_8BPP:
+        block = '5x4'    # 6.40 bpp (close to ~8 bpp, good alpha quality)
+    elif fmt in ASTC_FORMATS_32BPP:
+        block = '5x5'    # 5.12 bpp (best balance for uncompressed sources)
+    else:
+        block = '6x6'    # 3.56 bpp (safe default for unknown formats)
+
+    # Small texture override: cap at 6x6 to avoid wasting blocks on padding
+    if (vtf.width <= 64 or vtf.height <= 64) and block in ('5x5', '5x4', '6x5'):
+        block = '6x6'
+
+    return block
+
+def get_astc_format(block_size, is_hdr):
+    """Get the IMAGE_FORMAT value for a given block size and HDR flag."""
+    w, h = map(int, block_size.split('x'))
+    if is_hdr:
+        return ASTC_HDR_FORMATS.get((w, h), IMAGE_FORMAT_ASTC4x4_HDR)
+    else:
+        return ASTC_LDR_FORMATS.get((w, h), IMAGE_FORMAT_ASTC4x4)
 
 
 def _rgba_to_tga(rgba_data, width, height):
@@ -246,9 +466,10 @@ def _downscale_rgba16f(src_data, src_w, src_h, dst_w, dst_h):
     return bytes(result)
 
 
-def compress_to_astc(pixel_data, width, height, astcenc_path, color_profile, quality, is_hdr=False, jobs=1):
-    pad_w = ((width + 3) // 4) * 4
-    pad_h = ((height + 3) // 4) * 4
+def compress_to_astc(pixel_data, width, height, astcenc_path, color_profile, quality, is_hdr=False, jobs=1, block_size='4x4'):
+    bw, bh = map(int, block_size.split('x'))
+    pad_w = ((width + bw - 1) // bw) * bw
+    pad_h = ((height + bh - 1) // bh) * bh
     needs_padding = pad_w != width or pad_h != height
 
     tmpdir = tempfile.mkdtemp(prefix='vtf_astc_')
@@ -274,7 +495,7 @@ def compress_to_astc(pixel_data, width, height, astcenc_path, color_profile, qua
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         result = subprocess.run(
-            [astcenc_path, cp, in_path, out_path, '4x4', '-' + quality, '-j', str(jobs), '-silent'],
+            [astcenc_path, cp, in_path, out_path, block_size, '-' + quality, '-j', str(jobs), '-silent'],
             capture_output=True, timeout=120,
             startupinfo=startupinfo,
         )
@@ -323,12 +544,12 @@ def downscale_rgba(rgba_data, src_w, src_h, dst_w, dst_h):
                 result[idx + 3] = (a + n // 2) // n
     return bytes(result)
 
-def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality, skip_existing, jobs=1):
+def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality, skip_existing, jobs=1, block_size='auto'):
     if skip_existing and os.path.isfile(output_path):
         return {'status': 'skip', 'entry_name': entry_name}
 
     fmt = get_vtf_format_raw(entry_data)
-    if fmt == IMAGE_FORMAT_ASTC4x4 or fmt == IMAGE_FORMAT_ASTC4x4_HDR:
+    if fmt in ALL_ASTC_FORMATS:
         return {'status': 'already_astc', 'entry_name': entry_name}
 
     try:
@@ -346,6 +567,9 @@ def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality
     mip_count = vtf.mip_count
     start_frame = vtf.start_frame
     is_hdr = (vtf.format == vtfpp.ImageFormat.RGBA16161616F)
+
+    if block_size == 'auto':
+        block_size = select_astc_block_size(vtf, entry_name)
 
     max_mips = compute_num_mip_levels(width, height)
     if mip_count <= 0:
@@ -394,7 +618,7 @@ def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality
                 astc_data = compress_to_astc(
                     bytes(pixels), mip_w, mip_h,
                     astcenc_path, color_profile, quality, is_hdr=is_hdr,
-                    jobs=jobs,
+                    jobs=jobs, block_size=block_size,
                 )
                 if astc_data is None:
                     failed = True
@@ -419,7 +643,7 @@ def convert_vtf_entry(entry_data, entry_name, output_path, astcenc_path, quality
         flags=flags_val,
         num_frames=num_frames,
         mip_count=actual_mip_count,
-        img_format=IMAGE_FORMAT_ASTC4x4_HDR if is_hdr else IMAGE_FORMAT_ASTC4x4,
+        img_format=get_astc_format(block_size, is_hdr),
         start_frame=start_frame,
     )
 
@@ -470,7 +694,7 @@ def check_astcenc(astcenc_path, allow_download):
     print(f'  {version_line.strip()}')
 
 
-def process_vpks(game_dir, mod_dir, output_dir, astcenc_path, quality, skip_existing, threads):
+def process_vpks(game_dir, mod_dir, output_dir, astcenc_path, quality, skip_existing, threads, block_size='auto'):
     vpk_dir = os.path.join(game_dir, mod_dir)
     if not os.path.isdir(vpk_dir):
         print(f'  WARNING: Mod directory not found: {vpk_dir}', file=sys.stderr)
@@ -529,7 +753,7 @@ def process_vpks(game_dir, mod_dir, output_dir, astcenc_path, quality, skip_exis
 
                 future = executor.submit(
                     convert_vtf_entry, data, entry_name, out_path,
-                    astcenc_path, quality, skip_existing, vpk_jobs,
+                    astcenc_path, quality, skip_existing, vpk_jobs, block_size,
                 )
                 futures[future] = entry_name
 
@@ -561,7 +785,7 @@ def process_vpks(game_dir, mod_dir, output_dir, astcenc_path, quality, skip_exis
     return results
 
 
-def process_bsp_file(bsp_src_path, bsp_dst_path, astcenc_path, quality, skip_existing, threads, jobs=1, progress_callback=None):
+def process_bsp_file(bsp_src_path, bsp_dst_path, astcenc_path, quality, skip_existing, threads, jobs=1, progress_callback=None, block_size='auto'):
     results = {'converted': 0, 'skipped': 0, 'already_astc': 0, 'failed': [], 'error': None}
 
     os.makedirs(os.path.dirname(bsp_dst_path), exist_ok=True)
@@ -606,7 +830,7 @@ def process_bsp_file(bsp_src_path, bsp_dst_path, astcenc_path, quality, skip_exi
     for entry_name in vtf_names:
         data = all_entries[entry_name]
         try:
-            conv_result = convert_vtf_entry_inline(data, entry_name, astcenc_path, quality, skip_existing, jobs=jobs)
+            conv_result = convert_vtf_entry_inline(data, entry_name, astcenc_path, quality, skip_existing, jobs=jobs, block_size=block_size)
         except Exception as e:
             results['failed'].append(entry_name)
             if progress_callback:
@@ -647,15 +871,15 @@ def process_bsp_file(bsp_src_path, bsp_dst_path, astcenc_path, quality, skip_exi
     return results
 
 
-def convert_vtf_entry_inline(entry_data, entry_name, astcenc_path, quality, skip_existing, jobs=1):
+def convert_vtf_entry_inline(entry_data, entry_name, astcenc_path, quality, skip_existing, jobs=1, block_size='auto'):
     fmt = get_vtf_format_raw(entry_data)
-    if fmt == IMAGE_FORMAT_ASTC4x4 or fmt == IMAGE_FORMAT_ASTC4x4_HDR:
+    if fmt in ALL_ASTC_FORMATS:
         return {'status': 'already_astc', 'entry_name': entry_name}
 
     tmp_dir = tempfile.mkdtemp(prefix='bsp_vtf_')
     tmp_out = os.path.join(tmp_dir, os.path.basename(entry_name))
     try:
-        result = convert_vtf_entry(entry_data, entry_name, tmp_out, astcenc_path, quality, skip_existing=skip_existing, jobs=jobs)
+        result = convert_vtf_entry(entry_data, entry_name, tmp_out, astcenc_path, quality, skip_existing=skip_existing, jobs=jobs, block_size=block_size)
         if result['status'] == 'ok':
             with open(tmp_out, 'rb') as f:
                 result['data'] = f.read()
@@ -679,7 +903,7 @@ def _count_bsp_vtfs(bsp_src_dir, bsp_name):
         return 0
 
 
-def process_bsps(game_dir, mod_bsp_dir, output_dir, astcenc_path, quality, skip_existing, threads):
+def process_bsps(game_dir, mod_bsp_dir, output_dir, astcenc_path, quality, skip_existing, threads, block_size='auto'):
     bsp_src_dir = os.path.join(game_dir, mod_bsp_dir)
     if not os.path.isdir(bsp_src_dir):
         print(f'  WARNING: BSP directory not found: {bsp_src_dir}', file=sys.stderr)
@@ -716,7 +940,7 @@ def process_bsps(game_dir, mod_bsp_dir, output_dir, astcenc_path, quality, skip_
     def _process_one(bsp_name):
         src = os.path.join(bsp_src_dir, bsp_name)
         dst = os.path.join(output_dir, mod_bsp_dir, bsp_name)
-        return bsp_name, process_bsp_file(src, dst, astcenc_path, quality, skip_existing, threads, jobs=bsp_astc_jobs, progress_callback=_progress)
+        return bsp_name, process_bsp_file(src, dst, astcenc_path, quality, skip_existing, threads, jobs=bsp_astc_jobs, progress_callback=_progress, block_size=block_size)
 
     bsp_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=bsp_workers) as executor:
@@ -772,6 +996,9 @@ def main():
     parser.add_argument('--quality', default='fast',
                         choices=['fast', 'medium', 'thorough', 'exhaustive'],
                         help='astcenc quality preset (default: fast)')
+    parser.add_argument('--block-size', default='auto',
+                        choices=['auto'] + sorted(ASTC_BLOCK_BPP.keys()),
+                        help='ASTC block size (default: auto-select per texture)')
     parser.add_argument('--skip-existing', action='store_true',
                         help='Skip VTF files that already exist in output')
     parser.add_argument('--process-bsp', action='store_true',
@@ -798,6 +1025,7 @@ def main():
     vpk_results = process_vpks(
         args.game_dir, cfg['mod_dir'], output_dir,
         args.astcenc, args.quality, args.skip_existing, args.threads,
+        block_size=args.block_size,
     )
     print_summary(f'VPK textures ({game_label})', vpk_results)
 
@@ -807,6 +1035,7 @@ def main():
         bsp_results = process_bsps(
             args.game_dir, cfg['bsp_dir'], output_dir,
             args.astcenc, args.quality, args.skip_existing, args.threads,
+            block_size=args.block_size,
         )
         print_summary(f'BSP textures ({game_label})', bsp_results)
 
