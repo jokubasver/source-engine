@@ -65,7 +65,8 @@ private:
 	bool	m_bCenter;
 	bool	m_bConsoleStyle;
 	bool	m_bIsSteamDeck;
-	float	m_flProgressFraction;	
+	float	m_flProgressFraction;
+	Color	m_clrAccent;
 
 	CPanelAnimationVar( int, m_iAdditionalIndentX, "AdditionalIndentX", "0" );
 	CPanelAnimationVar( int, m_iAdditionalIndentY, "AdditionalIndentY", "0" );

@@ -31,6 +31,7 @@
 #include "VGuiMatSurface/IMatSystemSurface.h"
 
 extern IMaterialSystem *materials;
+extern const char *COM_GetModDirectory( void );
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include <tier0/memdbgon.h>
@@ -49,6 +50,12 @@ CLoadingDialog::CLoadingDialog( vgui::Panel *parent ) : Frame(parent, "LoadingDi
 
 	// Check for Steam Deck/gamepadui mode
 	m_bIsSteamDeck = IsSteamDeck();
+
+	// Set accent color based on the current game
+	if ( !Q_stricmp( COM_GetModDirectory(), "portal" ) )
+		m_clrAccent = Color( 61, 189, 237, 255 );
+	else
+		m_clrAccent = Color( 255, 134, 44, 255 );
 
 	if ( !m_bConsoleStyle && !m_bIsSteamDeck )
 	{
@@ -195,7 +202,7 @@ void CLoadingDialog::PaintBackground()
 				int spinnerScaledTall = (int)( spinnerTall * flScale );
 				int spinnerX = wide - logoWideScaled - 16 + ( logoWideScaled - spinnerScaledWide ) / 2;
 				int spinnerY = 16 + ( logoTallScaled - spinnerScaledTall ) / 2;
-				vgui::surface()->DrawSetColor( 255, 255, 255, 255 );
+				vgui::surface()->DrawSetColor( m_clrAccent );
 				vgui::surface()->DrawSetTexture( iSpinnerTexID );
 				vgui::surface()->DrawTexturedRect( spinnerX, spinnerY, spinnerX + spinnerScaledWide, spinnerY + spinnerScaledTall );
 			}
@@ -213,7 +220,7 @@ void CLoadingDialog::PaintBackground()
 		int fillWidth = (int)( (float)wide * m_flProgressFraction );
 		if ( fillWidth > 0 )
 		{
-			vgui::surface()->DrawSetColor( 173, 123, 55, 255 );
+			vgui::surface()->DrawSetColor( m_clrAccent );
 			vgui::surface()->DrawFilledRect( 0, barY, fillWidth, tall );
 		}
 
