@@ -191,11 +191,7 @@ void GamepadUIFrame::LayoutFooterButtons()
             nRightOffset += m_flFooterButtonsSpacing + m_pFooterButtons[i]->GetWide();
         }
 
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-        const bool bController = g_pInputSystem->IsSteamControllerActive();
-#else
         const bool bController = ( g_pInputSystem->GetJoystickCount() >= 1 );
-#endif
 
         const bool bVisible = bController || !( m_ControllerOnlyFooterMask & button );
         m_pFooterButtons[i]->SetVisible( bVisible );
@@ -218,10 +214,6 @@ void GamepadUIFrame::OnKeyCodePressed( vgui::KeyCode code )
     ButtonCode_t buttonCode = GetBaseButtonCode( code );
     switch (buttonCode)
     {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    case STEAMCONTROLLER_A:
-#endif
-
     case KEY_XBUTTON_A:
     case KEY_ENTER:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
@@ -234,10 +226,6 @@ void GamepadUIFrame::OnKeyCodePressed( vgui::KeyCode code )
         }
         break;
 
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_Y:
-#endif
-
     case KEY_XBUTTON_Y:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
         {
@@ -249,10 +237,6 @@ void GamepadUIFrame::OnKeyCodePressed( vgui::KeyCode code )
         }
         break;
 
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_X:
-#endif
-
     case KEY_XBUTTON_X:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
         {
@@ -263,10 +247,6 @@ void GamepadUIFrame::OnKeyCodePressed( vgui::KeyCode code )
             }
         }
         break;
-
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_B:
-#endif
 
     case KEY_XBUTTON_B:
     case KEY_ESCAPE:
@@ -289,11 +269,6 @@ void GamepadUIFrame::OnKeyCodeReleased( vgui::KeyCode code )
     ButtonCode_t buttonCode = GetBaseButtonCode( code );
     switch (buttonCode)
     {
-
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_A:
-#endif
-
     case KEY_XBUTTON_A:
     case KEY_ENTER:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
@@ -312,10 +287,6 @@ void GamepadUIFrame::OnKeyCodeReleased( vgui::KeyCode code )
         }
         break;
 
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_Y:
-#endif
-
     case KEY_XBUTTON_Y:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
         {
@@ -333,10 +304,6 @@ void GamepadUIFrame::OnKeyCodeReleased( vgui::KeyCode code )
         }
         break;
 
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_X:
-#endif
-
     case KEY_XBUTTON_X:
         for ( int i = 0; i < FooterButtons::MaxFooterButtons; i++ )
         {
@@ -353,10 +320,6 @@ void GamepadUIFrame::OnKeyCodeReleased( vgui::KeyCode code )
             }
         }
         break;
-
-#ifdef HL2_RETAIL
-    case STEAMCONTROLLER_B:
-#endif
 
     case KEY_XBUTTON_B:
     case KEY_ESCAPE:

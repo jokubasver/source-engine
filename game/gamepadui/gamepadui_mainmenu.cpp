@@ -218,10 +218,6 @@ void GamepadUIMainMenu::OnKeyCodeReleased( vgui::KeyCode code )
     ButtonCode_t buttonCode = GetBaseButtonCode( code );
     switch (buttonCode)
     {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    case STEAMCONTROLLER_B:
-#endif
-
     case KEY_XBUTTON_B:
         if ( GamepadUI::GetInstance().IsInLevel() )
         {

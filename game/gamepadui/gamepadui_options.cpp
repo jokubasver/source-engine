@@ -238,9 +238,7 @@ public:
         {
         case KEY_ENTER:
         case KEY_XBUTTON_A:
-#ifdef HL2_RETAIL
         case STEAMCONTROLLER_A:
-#endif
             if ( !s_bBeingBound )
                 StartCapture();
             break;
@@ -377,10 +375,7 @@ public:
         {
         case KEY_LEFT:
         case KEY_XBUTTON_LEFT:
-
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
         case STEAMCONTROLLER_DPAD_LEFT:
-#endif
             if ( --m_nSelectedItem < 0 )
                 m_nSelectedItem = Max( 0, m_Options.Count() - 1 );
             if ( m_bInstantApply )
@@ -389,10 +384,7 @@ public:
 
         case KEY_RIGHT:
         case KEY_XBUTTON_RIGHT:
-
-#ifdef HL2_RETAIL
         case STEAMCONTROLLER_DPAD_RIGHT:
-#endif
             if ( m_Options.Count() )
                 m_nSelectedItem = ( m_nSelectedItem + 1 ) % m_Options.Count();
             if ( m_bInstantApply )
@@ -541,10 +533,7 @@ public:
         {
         case KEY_LEFT:
         case KEY_XBUTTON_LEFT:
-
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
         case STEAMCONTROLLER_DPAD_LEFT:
-#endif
             m_flValue = Clamp( m_flValue - m_flStep, m_flMin, m_flMax );
             if ( m_bInstantApply )
                 UpdateConVar();
@@ -552,10 +541,7 @@ public:
 
         case KEY_RIGHT:
         case KEY_XBUTTON_RIGHT:
-
-#ifdef HL2_RETAIL
         case STEAMCONTROLLER_DPAD_RIGHT:
-#endif
             m_flValue = Clamp( m_flValue + m_flStep, m_flMin, m_flMax );
             if ( m_bInstantApply )
                 UpdateConVar();
@@ -1287,10 +1273,16 @@ void GamepadUIOptionsPanel::Paint()
     const int nGlyphOffsetY = nTabSize - nGlyphSize;
 
     if ( m_leftGlyph.SetupGlyph( nGlyphSize, "menu_lb", true ) )
+    {
+        m_leftGlyph.SetFont( m_hGenericFont );
         m_leftGlyph.PaintGlyph( m_flTabsOffsetX - nGlyphSize - nGlyphOffsetX, m_flTabsOffsetY + nGlyphOffsetY / 2, nGlyphSize, 255 );
+    }
 
     if ( m_rightGlyph.SetupGlyph( nGlyphSize, "menu_rb", true ) )
+    {
+        m_rightGlyph.SetFont( m_hGenericFont );
         m_rightGlyph.PaintGlyph( nLastTabX + nGlyphOffsetX, m_flTabsOffsetY + nGlyphOffsetY / 2, nGlyphSize, 255 );
+    }
 }
 
 void GamepadUIOptionsPanel::UpdateGradients()
@@ -1738,19 +1730,13 @@ void GamepadUIOptionsPanel::OnKeyCodePressed( vgui::KeyCode code )
 
     switch ( buttonCode )
     {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-        case STEAMCONTROLLER_LEFT_BUMPER:
-#else
         case KEY_XBUTTON_LEFT_SHOULDER:
-#endif
+        case STEAMCONTROLLER_LEFT_BUMPER:
             SetActiveTab( GetActiveTab() - 1 );
             break;
 
-#ifdef HL2_RETAIL
-        case STEAMCONTROLLER_RIGHT_BUMPER:
-#else
         case KEY_XBUTTON_RIGHT_SHOULDER:
-#endif
+        case STEAMCONTROLLER_RIGHT_BUMPER:
             SetActiveTab( GetActiveTab() + 1 );
             break;
         default:

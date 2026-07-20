@@ -161,11 +161,11 @@ int GamepadUIButton::PaintText()
         nTextPosY = m_flHeight / 2 - nTextSizeY / 2 + m_flTextOffsetY;
     }
 
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    if ( g_pInputSystem->IsSteamControllerActive() )
+    if ( g_pInputSystem->GetJoystickCount() >= 1 )
     {
         const int nGlyphSize = m_flHeight * 0.80f;
-        if ( m_glyph.SetupGlyph( nGlyphSize, FooterButtons::GetButtonActionHandleString( m_eFooterButton ) ) )
+        const char *pszAction = FooterButtons::GetButtonActionHandleString( m_eFooterButton );
+        if ( pszAction && *pszAction && m_glyph.SetupGlyph( nGlyphSize, pszAction ) )
         {
             int nGlyphPosX = m_flTextOffsetX;
             if (m_CenterX)
@@ -181,10 +181,10 @@ int GamepadUIButton::PaintText()
 
             int nAlpha = 255 * (1.0f - m_flGlyphFade);
 
+            m_glyph.SetFont( state == ButtonStates::Out ? m_hTextFont : m_hTextFontOver );
             m_glyph.PaintGlyph( nGlyphPosX, nGlyphPosY, nGlyphSize, nAlpha );
         }
     }
-#endif // HL2_RETAIL
 
     if (!m_strButtonText.IsEmpty())
     {
@@ -241,10 +241,6 @@ void GamepadUIButton::OnKeyCodePressed( vgui::KeyCode code )
     ButtonCode_t buttonCode = GetBaseButtonCode( code );
     switch ( buttonCode )
     {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    case STEAMCONTROLLER_A:
-#endif
-
     case KEY_XBUTTON_A:
     case KEY_ENTER:
         if ( IsEnabled() )
@@ -273,10 +269,6 @@ void GamepadUIButton::OnKeyCodeReleased( vgui::KeyCode code )
     ButtonCode_t buttonCode = GetBaseButtonCode(code);
     switch ( buttonCode )
     {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    case STEAMCONTROLLER_A:
-#endif
-
     case KEY_XBUTTON_A:
     case KEY_ENTER:
         if ( IsEnabled() && IsDepressed() && m_bControllerPressed )
@@ -367,11 +359,7 @@ void GamepadUIButton::NavigateFrom()
 
 void GamepadUIButton::OnCursorEntered()
 {
-#ifdef HL2_RETAIL // Steam input and Steam Controller are not supported in SDK2013 (Madi)
-    if ( g_pInputSystem->IsSteamControllerActive() || !IsEnabled() )
-#else
-    if ( !IsEnabled() )
-#endif
+    if ( g_pInputSystem->GetJoystickCount() >= 1 || !IsEnabled() )
         return;
 
     BaseClass::OnCursorEntered();
