@@ -229,11 +229,6 @@ void CBudgetPanelShared::SnapshotVProfHistory( float filteredtime  )
 		for ( int groupID=0; groupID < GetNumCachedBudgetGroups(); groupID++ )
 		{
 			float dt = times[groupID];
-			// Hack:  add filtered time into unnaccounted group...
-			if ( groupID == VPROF_BUDGET_GROUP_ID_UNACCOUNTED )
-			{
-				dt += 1000.0f * filteredtime;
-			}
 			m_BudgetGroupTimes[groupID].m_Time[m_BudgetHistoryOffset] = dt;
 		}
 	}
