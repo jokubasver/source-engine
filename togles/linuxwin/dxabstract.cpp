@@ -3281,6 +3281,7 @@ HRESULT IDirect3DDevice9::CreateRenderTarget(UINT Width,UINT Height,D3DFORMAT Fo
 
 void IDirect3DDevice9::UpdateBoundFBO()
 {
+	VPROF_BUDGET( "ToGL_UpdateFBO", "ToGL_UpdateFBO" );
 	RenderTargetState_t renderTargetState;
 	for ( uint i = 0; i < 4; i++ )
 	{

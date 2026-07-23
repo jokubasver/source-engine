@@ -2158,6 +2158,7 @@ static uint gPersistentBufferSize[kGLMNumBufferTypes] =
 void GLMContext::BeginFrame( void )
 {
 	GLM_FUNC;
+	VPROF_BUDGET( "ToGL_BeginFrame", "ToGL_BeginFrame" );
 
 	m_debugFrameIndex++;
 	
@@ -2242,6 +2243,7 @@ void GLMContext::BeginFrame( void )
 void GLMContext::EndFrame( void )
 {
 	GLM_FUNC;
+	VPROF_BUDGET( "ToGL_EndFrame", "ToGL_EndFrame" );
 
 #if GLMDEBUG
 	// init debug hook information
@@ -2313,6 +2315,7 @@ extern ConVar gl_blitmode;
 void GLMContext::Present( CGLMTex *tex )
 {
 	GLM_FUNC;
+	VPROF_BUDGET( "ToGL_Present", "ToGL_Present" );
 	
 	{
 #if GL_TELEMETRY_GPU_ZONES
@@ -2320,7 +2323,10 @@ void GLMContext::Present( CGLMTex *tex )
 		g_TelemetryGPUStats.m_nTotalPresent++;
 #endif
 
-		ProcessTextureDeletes();
+		{
+			VPROF_BUDGET( "ToGL_Present_TexDeletes", "ToGL_Present_TexDeletes" );
+			ProcessTextureDeletes();
+		}
 
 		bool newRefreshMode = false;
 		// two ways to go:
@@ -2391,9 +2397,12 @@ void GLMContext::Present( CGLMTex *tex )
 				// do not ask for LINEAR if blit is unscaled
 				// NULL means targeting GL_BACK.  Blit2 will break it down into two steps if needed, and will handle resolve, scale, flip.
 				bool blitScales	=	(showparams.m_width != static_cast<int>(dstWidth)) || (showparams.m_height != static_cast<int>(dstHeight));
-				Blit2(	tex, &srcRect, 0,0,
-								NULL, &dstRect, 0,0,
-								blitScales ? GL_LINEAR : GL_NEAREST );
+				{
+					VPROF_BUDGET( "ToGL_Present_Blit", "ToGL_Present_Blit" );
+					Blit2(	tex, &srcRect, 0,0,
+									NULL, &dstRect, 0,0,
+									blitScales ? GL_LINEAR : GL_NEAREST );
+				}
 
 				// we set showparams.m_noBlit, and just let CocoaMgr handle the swap (flushbuffer / page flip)
 				showparams.m_noBlit = true;
@@ -2409,7 +2418,10 @@ void GLMContext::Present( CGLMTex *tex )
 				// showparams.m_noBlit is left set to 0.  CocoaMgr does the blit.
 			}
 
+		{
+			VPROF_BUDGET( "ToGL_Present_Swap", "ToGL_Present_Swap" );
 			ShowPixels(&showparams);
+		}
 		}
 
 		//	put the original FB back in place (both read and draw)

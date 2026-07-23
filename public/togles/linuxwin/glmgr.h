@@ -52,6 +52,7 @@
 
 #include "tier0/tslist.h"
 #include "tier0/vprof_telemetry.h"
+#include "tier0/vprof.h"
 #include "materialsystem/IShader.h"
 #include "dxabstract_types.h"
 #include "tier0/icommandline.h"
@@ -1872,6 +1873,7 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 	//tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s %d-%d count:%d mode:%d type:%d", __FUNCTION__, start, end, count, mode, type );
 #endif
 
+	VPROF_BUDGET( "ToGL_DrawRangeElements", "ToGL_DrawRangeElements" );
 	++m_nBatchCounter;
 
 	SetIndexBuffer( pIndexBuf );
@@ -1942,6 +1944,7 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 		// do the drawing
 		if (hasVP && hasFP)
 		{
+			VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
 			if ( gGL->glDrawRangeElementsBaseVertex )
 		{
 			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
@@ -1971,6 +1974,7 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 
 	if ( m_pBoundPair )
 	{
+		VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
 		if ( gGL->glDrawRangeElementsBaseVertex )
 		{
 			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );

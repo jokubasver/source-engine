@@ -49,6 +49,7 @@ FORCEINLINE GLuint GLMContext::FindSamplerObject( const GLMTexSamplingParams &de
 // BE VERY CAREFUL WHAT YOU DO IN HERE. This is called on every batch, even seemingly simple changes can kill perf.
 FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, uint nBaseVertex )	// shadersOn = true for draw calls, false for clear calls
 {
+	VPROF_BUDGET( "ToGL_FlushDrawStates", "ToGL_FlushDrawStates" );
 	Assert( m_drawingLang == kGLMGLSL ); // no support for ARB shaders right now (and NVidia reports that they aren't worth targeting under Windows/Linux for various reasons anyway)
 	Assert( ( m_drawingFBO == m_boundDrawFBO ) && ( m_drawingFBO == m_boundReadFBO ) ); // this check MUST succeed
 	Assert( m_pDevice->m_pVertDecl );
