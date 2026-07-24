@@ -101,19 +101,19 @@ def _has_token(tokens, candidates):
 
 GAME_CONFIGS = {
     "hl2": {
-        "mod_dir": "hl2",
+        "mod_dirs": ["hl2"],
         "bsp_dir": "hl2/maps",
     },
     "portal": {
-        "mod_dir": "portal",
+        "mod_dirs": ["portal", "hl2"],  # Portal uses shared HL2 assets
         "bsp_dir": "portal/maps",
     },
     "episodic": {
-        "mod_dir": "episodic",
+        "mod_dirs": ["episodic", "hl2"],  # Episode 1 uses shared HL2 assets
         "bsp_dir": "episodic/maps",
     },
     "ep2": {
-        "mod_dir": "ep2",
+        "mod_dirs": ["ep2", "hl2"],  # Episode 2 uses shared HL2 assets
         "bsp_dir": "ep2/maps",
     },
 }
@@ -597,9 +597,10 @@ def process_vpks_repack(
 ):
     """
     Process VPKs and repack converted VTFs back into VPK files.
-    Output VPKs are written to output_dir, preserving original names.
+    Output VPKs are written to output_dir/mod_dir/, preserving original names.
     """
     vpk_dir = os.path.join(game_dir, mod_dir)
+    vpk_output_dir = os.path.join(output_dir, mod_dir)
 
     empty_results = {
         "converted": 0,
@@ -630,7 +631,7 @@ def process_vpks_repack(
     threads = max(1, int(threads))
     batch_size = max(threads * 4, 16)
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(vpk_output_dir, exist_ok=True)
 
     for vpk_name in vpk_files:
         vpk_path = os.path.join(vpk_dir, vpk_name)
@@ -734,14 +735,15 @@ def process_vpks_repack(
             print(f"    Repacking {len(converted_data)} converted VTFs...")
             for entry_name, data in converted_data.items():
                 try:
-                    pak.add_entry(entry_name, data)
+                    pak.remove_entry(entry_name)
+                    pak.add_entry_from_mem(entry_name, data)
                 except Exception as e:
                     results["failed"].append(f"{entry_name}: Failed to add to VPK: {e}")
 
             # Bake the modified VPK to output directory
             try:
-                pak.bake(output_dir)
-                print(f"    Wrote: {output_dir}/{vpk_name}")
+                pak.bake(vpk_output_dir)
+                print(f"    Wrote: {vpk_output_dir}/{vpk_name}")
             except Exception as e:
                 print(f"    ERROR: Failed to bake VPK: {e}", file=sys.stderr)
                 results["failed"].append(f"{vpk_name}: Failed to bake VPK: {e}")
@@ -1398,34 +1400,50 @@ quality presets:
     game_label = args.game
     output_dir = os.path.abspath(args.output_dir)
 
-    # Phase 1: VPK textures
-    if args.repack_vpk:
-        print(f"\n=== Converting VPK textures for {game_label} (repack mode) ===")
+    # Phase 1: VPK textures (process all mod directories)
+    vpk_results = {
+        "converted": 0,
+        "skipped": 0,
+        "already_astc": 0,
+        "failed": [],
+        "total": 0,
+    }
 
-        vpk_results = process_vpks_repack(
-            args.game_dir,
-            cfg["mod_dir"],
-            output_dir,
-            args.maretf,
-            args.threads,
-            block_size=args.block_size,
-            timeout=args.timeout,
-            quality=args.quality,
-        )
-    else:
-        print(f"\n=== Converting VPK textures for {game_label} (extract mode) ===")
+    for mod_dir in cfg["mod_dirs"]:
+        if args.repack_vpk:
+            print(f"\n=== Converting VPK textures for {game_label}/{mod_dir} (repack mode) ===")
 
-        vpk_results = process_vpks(
-            args.game_dir,
-            cfg["mod_dir"],
-            output_dir,
-            args.maretf,
-            args.skip_existing,
-            args.threads,
-            block_size=args.block_size,
-            timeout=args.timeout,
-            quality=args.quality,
-        )
+            mod_results = process_vpks_repack(
+                args.game_dir,
+                mod_dir,
+                output_dir,
+                args.maretf,
+                args.threads,
+                block_size=args.block_size,
+                timeout=args.timeout,
+                quality=args.quality,
+            )
+        else:
+            print(f"\n=== Converting VPK textures for {game_label}/{mod_dir} (extract mode) ===")
+
+            mod_results = process_vpks(
+                args.game_dir,
+                mod_dir,
+                output_dir,
+                args.maretf,
+                args.skip_existing,
+                args.threads,
+                block_size=args.block_size,
+                timeout=args.timeout,
+                quality=args.quality,
+            )
+
+        # Merge results
+        vpk_results["converted"] += mod_results["converted"]
+        vpk_results["skipped"] += mod_results["skipped"]
+        vpk_results["already_astc"] += mod_results["already_astc"]
+        vpk_results["failed"].extend(mod_results["failed"])
+        vpk_results["total"] += mod_results["total"]
 
     print_summary(f"VPK textures ({game_label})", vpk_results)
 
