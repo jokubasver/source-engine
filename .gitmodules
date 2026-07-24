@@ -7,3 +7,12 @@
 [submodule "lib"]
 	path = lib
 	url = https://github.com/nillerusr/source-engine-libs.git
+[submodule "tools/sourcepp"]
+	path = tools/sourcepp
+	url = https://github.com/jokubasver/sourcepp.git
+[submodule "tools/maretf"]
+	path = tools/maretf
+	url = https://github.com/jokubasver/MareTF.git
+[submodule "tools/astc-encoder"]
+	path = tools/astc-encoder
+	url = https://github.com/arm-software/astc-encoder.git

@@ -40,3 +40,5 @@ source-engine.sln
 /portal_astc
 /hl2_astc
 astcenc.exe
+/tools/hl2_astc
+AGENTS.md

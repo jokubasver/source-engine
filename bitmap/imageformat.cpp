@@ -215,8 +215,9 @@ int GetMemRequired( int width, int height, int depth, ImageFormat imageFormat, b
 				// Check HDR variants by subtracting the HDR offset
 				if ( blockW == 4 && blockH == 4 && imageFormat != IMAGE_FORMAT_ASTC4x4 )
 				{
-					// Might be an HDR format - check if (fmt - 24) is in the table
-					int ldrFmt = (int)imageFormat - 24;
+					// HDR formats are 23 enum slots after their LDR equivalents
+					// (except ASTC4x4_HDR at +1, which already mapped via default blockW=4 above)
+					int ldrFmt = (int)imageFormat - 23;
 					if ( ldrFmt >= (int)IMAGE_FORMAT_ASTC5x4 && ldrFmt <= (int)IMAGE_FORMAT_ASTC6x6x6 )
 					{
 						for ( auto &e : astcBlocks )
