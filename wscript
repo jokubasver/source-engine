@@ -207,6 +207,9 @@ def define_platform(conf):
 	if conf.options.TOGLES:
 		conf.env.append_unique('DEFINES', ['TOGLES'])
 
+	if conf.options.VPROF:
+		conf.define('VPROF_ENABLED', 1)
+
 	if conf.options.TESTS:
 		conf.define('UNITTESTS', 1)
 
@@ -315,6 +318,9 @@ def options(opt):
 
 	grp.add_option('--togles', action = 'store_true', dest = 'TOGLES', default = False,
 		help = 'build engine with ToGLES [default: %default]')
+
+	grp.add_option('--vprof', action = 'store_true', dest = 'VPROF', default = False,
+		help = 'build engine with VProf profiling enabled (adds runtime overhead) [default: %default]')
 
 	# TODO(nillerusr): add wscript for opus building
 	grp.add_option('--enable-opus', action = 'store_true', dest = 'OPUS', default = False,
