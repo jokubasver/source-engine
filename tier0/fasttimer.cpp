@@ -29,9 +29,15 @@ CClockSpeedInit g_ClockSpeedInit CONSTRUCT_EARLY;
 
 void CClockSpeedInit::Init()
 {
+#if ( defined( __arm__ ) || defined( __aarch64__ ) ) && defined( POSIX )
+	// Plat_Rdtsc returns clock_gettime nanoseconds on POSIX ARM, not CPU
+	// core cycles.  Using the CPU's scaling/max frequency here makes every
+	// CFastTimer and VProf duration wrong as the CPU frequency changes.
+	g_ClockSpeed = 1000000000ULL;
+#else
 	const CPUInformation& cpuinfo = *GetCPUInformation();
-
 	g_ClockSpeed = cpuinfo.m_Speed;
+#endif
 
 	// cycle counter runs as doc'd at 1/64 Xbox 3.2GHz clock speed, thus 50 Mhz
 	if ( IsX360() )
