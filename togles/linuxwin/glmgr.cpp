@@ -624,7 +624,10 @@ void GLMContext::ForceFlushStates()
 
 	for ( int i = 0; i < GLM_SAMPLER_COUNT; i++ )
 	{
-		SetSamplerTex( i, m_samplers[i].m_pBoundTex );
+		// This is an explicit state restore after outside GL work.  SetSamplerTex
+		// normally skips an identical cached pointer, so use the unconditional
+		// helper here to put the cached texture back into the real GL context.
+		BindTexToTMU( m_samplers[i].m_pBoundTex, i );
 		SetSamplerDirty( i );
 	}
 
@@ -638,6 +641,12 @@ void GLMContext::ForceFlushStates()
 		gGL->glDisableVertexAttribArray( index );
 
 	// Program
+	// ForceFlushStates is used after code that can bypass GLM's state mirrors.
+	// Treat all pair-local uniform snapshots as untrusted as well; each linked
+	// pair will take one complete active-range refresh in the new epoch.
+	++m_nProgramParamRevisionEpoch;
+	if ( !m_nProgramParamRevisionEpoch )
+		m_nProgramParamRevisionEpoch = 1;
 	NullProgram();
 
 	// FBO
@@ -1593,26 +1602,27 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 			// or should it be GL_LINEAR?  does it matter ?
 
 		// After resolve, the source MSAA buffer (RBO) is no longer needed.
-		// Discard it so tile-based renderers skip the tile-buffer store.
-		if ( gGL->m_bHave_GL_EXT_discard_framebuffer )
+		// glDiscardFramebufferEXT only accepts GL_FRAMEBUFFER; ES 3.x core
+		// invalidation is the API that accepts GL_READ_FRAMEBUFFER.
+		if ( gGL->glInvalidateFramebuffer )
 		{
-			GLenum discardList[3];
-			int numDiscard = 0;
+			GLenum invalidateList[3];
+			int numInvalidate = 0;
 			if ( blitMask & GL_COLOR_BUFFER_BIT )
 			{
-				discardList[numDiscard++] = GL_COLOR_ATTACHMENT0;
+				invalidateList[numInvalidate++] = GL_COLOR_ATTACHMENT0;
 			}
 			if ( blitMask & GL_DEPTH_BUFFER_BIT )
 			{
-				discardList[numDiscard++] = GL_DEPTH_ATTACHMENT;
+				invalidateList[numInvalidate++] = GL_DEPTH_ATTACHMENT;
 			}
 			if ( blitMask & GL_STENCIL_BUFFER_BIT )
 			{
-				discardList[numDiscard++] = GL_STENCIL_ATTACHMENT;
+				invalidateList[numInvalidate++] = GL_STENCIL_ATTACHMENT;
 			}
-			if ( numDiscard > 0 )
+			if ( numInvalidate > 0 )
 			{
-				gGL->glDiscardFramebufferEXT( GL_READ_FRAMEBUFFER, numDiscard, discardList );
+				gGL->glInvalidateFramebuffer( GL_READ_FRAMEBUFFER, numInvalidate, invalidateList );
 			}
 		}
 
@@ -2375,6 +2385,26 @@ void GLMContext::Present( CGLMTex *tex )
 
 		if (refresh)
 		{
+			// The main scene depth/stencil is dead after all render passes have
+			// completed. Discard it before switching away from the scene FBO so
+			// a tile-based GPU does not write those tiles back to system memory.
+			// Color is preserved because it is the presentation-blit source.
+			if ( gGL->m_bHave_GL_EXT_discard_framebuffer && m_drawingFBO && ( m_boundDrawFBO == m_drawingFBO ) )
+			{
+				GLenum discardList[2];
+				int numDiscard = 0;
+				if ( m_drawingFBO->m_attach[kAttDepth].m_tex || m_drawingFBO->m_attach[kAttDepthStencil].m_tex )
+					discardList[numDiscard++] = GL_DEPTH_ATTACHMENT;
+				if ( m_drawingFBO->m_attach[kAttStencil].m_tex || m_drawingFBO->m_attach[kAttDepthStencil].m_tex )
+					discardList[numDiscard++] = GL_STENCIL_ATTACHMENT;
+
+				if ( numDiscard > 0 )
+				{
+					VPROF_BUDGET( "ToGL_Present_DiscardDepth", "ToGL_Present_DiscardDepth" );
+					gGL->glDiscardFramebufferEXT( GL_FRAMEBUFFER, numDiscard, discardList );
+				}
+			}
+
 			if (newRefreshMode)
 			{
 				// blit to GL_BACK done here, not in CocoaMgr, this lets us do resolve directly if conditions are right
@@ -2474,6 +2504,7 @@ ConVar gl_can_query_fast("gl_can_query_fast", "0");
 GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 {
 	m_nNumDirtySamplers = 0;
+	m_nClipPlaneStateRevision = 0;
 
 	if( gGL->m_nDriverProvider == cGLDriverProviderARM )
 		m_bUseSamplerObjects = true;
@@ -2482,6 +2513,19 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 	if ( CommandLine()->CheckParm( "-gl_enablesamplerobjects" ) )
 		m_bUseSamplerObjects = true;
+
+	// Mali GLES drivers may spend less CPU validating the non-range entry point.
+	// GLES 3.2 guarantees glDrawElementsBaseVertex; retain an override so the
+	// range path can be selected for direct A/B testing without rebuilding.
+	m_bUseDrawElementsBaseVertex =
+		( gGL->m_nDriverProvider == cGLDriverProviderARM ) &&
+		( gGL->glDrawElementsBaseVertex != NULL );
+	if ( CommandLine()->CheckParm( "-gl_draw_range_elements" ) )
+		m_bUseDrawElementsBaseVertex = false;
+
+	m_bUseProgramParamRevisionCache =
+		( gGL->m_nDriverProvider == cGLDriverProviderARM ) &&
+		!CommandLine()->CheckParm( "-gl_disable_program_param_cache" );
 
 	// Try to get some more free memory by relying on driver host copies instead of ours.
 	//  In some cases the driver will be able to discard their own host copy and rely on GPU
@@ -2493,6 +2537,8 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 		m_bTexClientStorage = true;
 
 	GLMDebugPrintf( "GL sampler object usage: %s\n", m_bUseSamplerObjects ? "ENABLED" : "DISABLED" );
+	GLMDebugPrintf( "GL base-vertex draw entry point: %s\n", m_bUseDrawElementsBaseVertex ? "DrawElements" : "DrawRangeElements" );
+	GLMDebugPrintf( "GL pair-local program parameter cache: %s\n", m_bUseProgramParamRevisionCache ? "ENABLED" : "DISABLED" );
 
 	m_nCurOwnerThreadId = ThreadGetCurrentId();
 	m_nThreadOwnershipReleaseCounter = 0;
@@ -2655,6 +2701,11 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	memset( m_programParamsF , 0, sizeof( m_programParamsF ) );
 	memset( m_programParamsB , 0, sizeof( m_programParamsB ) );
 	memset( m_programParamsI , 0, sizeof( m_programParamsI ) );
+	m_nProgramParamRevision = 0;
+	m_nProgramParamRevisionEpoch = 1;
+	memset( m_programParamRevisionF, 0, sizeof( m_programParamRevisionF ) );
+	memset( m_programParamRevisionB, 0, sizeof( m_programParamRevisionB ) );
+	memset( m_programParamRevisionI, 0, sizeof( m_programParamRevisionI ) );
 
 	for (uint i = 0; i < ARRAYSIZE(m_programParamsF); i++)
 	{
@@ -4957,6 +5008,7 @@ void GLMContext::SetDefaultStates( void )
 
 	m_ClipPlaneEnable.Default();
 	m_ClipPlaneEquation.Default();
+	++m_nClipPlaneStateRevision;
 	
 	m_ScissorEnable.Default();	
 	m_ScissorBox.Default();
@@ -5167,7 +5219,10 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 
 	if ( m_pBoundPair )
 	{
-		gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
+		if ( m_bUseDrawElementsBaseVertex )
+			gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
+		else
+			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 
 #if GLMDEBUG
 		if ( m_slowCheckEnable )

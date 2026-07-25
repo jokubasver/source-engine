@@ -65,6 +65,77 @@ bool g_bNullD3DDevice;
 static D3DToGL		g_D3DToOpenGLTranslatorGLSL;
 static IDirect3DDevice9 *g_pD3D_Device;
 
+// Lightweight render-worker profiler for the RK3326/Mali-G31 investigation.
+// This deliberately avoids GL_BATCH_PERF_ANALYSIS: that dormant Valve path
+// depends on removed Telemetry and bitmap code and replaces every GL call.
+#define GLM_WORKER_PERF_ANALYSIS 0
+
+#if GLM_WORKER_PERF_ANALYSIS
+struct CGLMWorkerPerfStats
+{
+	CCycleCount m_FlushDrawStatesTime;
+	CCycleCount m_GLDrawTime;
+	CCycleCount m_PresentTime;
+	CCycleCount m_UpdateFBOTime;
+	CCycleCount m_ClearTime;
+	CCycleCount m_StretchRectTime;
+	double m_flSwapWindowTime;
+	double m_flSwapWindowTimeSquared;
+	double m_flResetTime;
+	uint64 m_nFrames;
+	uint64 m_nBatches;
+	uint64 m_nPrimitives;
+	uint64 m_nProfiledDraws;
+	uint64 m_nProgramChanges;
+	uint64 m_nUpdateFBOs;
+	uint64 m_nClears;
+	uint64 m_nStretchRects;
+
+	void Reset()
+	{
+		m_FlushDrawStatesTime.Init();
+		m_GLDrawTime.Init();
+		m_PresentTime.Init();
+		m_UpdateFBOTime.Init();
+		m_ClearTime.Init();
+		m_StretchRectTime.Init();
+		m_flSwapWindowTime = 0.0;
+		m_flSwapWindowTimeSquared = 0.0;
+		m_flResetTime = Plat_FloatTime();
+		m_nFrames = 0;
+		m_nBatches = 0;
+		m_nPrimitives = 0;
+		m_nProfiledDraws = 0;
+		m_nProgramChanges = 0;
+		m_nUpdateFBOs = 0;
+		m_nClears = 0;
+		m_nStretchRects = 0;
+	}
+};
+
+static CGLMWorkerPerfStats s_WorkerPerfStats;
+
+class CGLMWorkerPerfTimer
+{
+public:
+	explicit CGLMWorkerPerfTimer( CCycleCount &total )
+		: m_Total( total )
+	{
+		m_Timer.Start();
+	}
+
+	~CGLMWorkerPerfTimer()
+	{
+		m_Timer.End();
+		m_Total += m_Timer.GetDuration();
+	}
+
+private:
+	CFastTimer m_Timer;
+	CCycleCount &m_Total;
+};
+#endif
+
 #if GL_BATCH_PERF_ANALYSIS
 	#include "../../thirdparty/miniz/simple_bitmap.h"
 	#include "../../thirdparty/miniz/miniz.c"
@@ -2441,6 +2512,7 @@ HRESULT	IDirect3DDevice9::Create( IDirect3DDevice9Params *params )
 	m_pDefaultDepthStencilSurface = NULL;
 	
 	memset( m_streams, 0, sizeof(m_streams) );
+	m_nVertexInputRevision = 0;
 	memset( m_vtx_buffers, 0, sizeof( m_vtx_buffers ) );
 	memset( m_textures, 0, sizeof(m_textures) );
 	//memset( m_samplers, 0, sizeof(m_samplers) );
@@ -2970,6 +3042,55 @@ void IDirect3DDevice9::DumpStatsToConsole( const CCommand *pArgs )
 		m_nOverallPresents = 0;
 	}
 #endif
+
+#if GLM_WORKER_PERF_ANALYSIS
+	const double flFrames = (double)s_WorkerPerfStats.m_nFrames;
+	const double flDraws = (double)s_WorkerPerfStats.m_nProfiledDraws;
+	const double flFlushMS = s_WorkerPerfStats.m_FlushDrawStatesTime.GetMillisecondsF();
+	const double flDrawMS = s_WorkerPerfStats.m_GLDrawTime.GetMillisecondsF();
+	const double flPresentMS = s_WorkerPerfStats.m_PresentTime.GetMillisecondsF();
+	const double flUpdateFBOMS = s_WorkerPerfStats.m_UpdateFBOTime.GetMillisecondsF();
+	const double flClearMS = s_WorkerPerfStats.m_ClearTime.GetMillisecondsF();
+	const double flStretchRectMS = s_WorkerPerfStats.m_StretchRectTime.GetMillisecondsF();
+	const double flElapsedSeconds = s_WorkerPerfStats.m_flResetTime > 0.0 ?
+		Plat_FloatTime() - s_WorkerPerfStats.m_flResetTime : 0.0;
+	const double flSwapMean = flFrames ? s_WorkerPerfStats.m_flSwapWindowTime / flFrames : 0.0;
+	const double flSwapVariance = flFrames ?
+		( s_WorkerPerfStats.m_flSwapWindowTimeSquared / flFrames ) - ( flSwapMean * flSwapMean ) : 0.0;
+
+	ConMsg( "GL worker: Frames: %llu Batches: %llu (%4.2f/frame) Prims: %llu (%4.2f/frame) Program changes: %llu (%4.2f/frame)\n",
+		(unsigned long long)s_WorkerPerfStats.m_nFrames,
+		(unsigned long long)s_WorkerPerfStats.m_nBatches,
+		flFrames ? s_WorkerPerfStats.m_nBatches / flFrames : 0.0,
+		(unsigned long long)s_WorkerPerfStats.m_nPrimitives,
+		flFrames ? s_WorkerPerfStats.m_nPrimitives / flFrames : 0.0,
+		(unsigned long long)s_WorkerPerfStats.m_nProgramChanges,
+		flFrames ? s_WorkerPerfStats.m_nProgramChanges / flFrames : 0.0 );
+	ConMsg( "GL capture wall: %4.3fs (%4.2f presented frames/sec)\n",
+		flElapsedSeconds,
+		flElapsedSeconds > 0.0 ? flFrames / flElapsedSeconds : 0.0 );
+	ConMsg( "GL worker draw split: Calls: %llu (%4.2f/frame) FlushDrawStates: %4.3fms (%4.3fms/frame, %4.6fms/draw) GLDraw: %4.3fms (%4.3fms/frame, %4.6fms/draw)\n",
+		(unsigned long long)s_WorkerPerfStats.m_nProfiledDraws,
+		flFrames ? flDraws / flFrames : 0.0,
+		flFlushMS, flFrames ? flFlushMS / flFrames : 0.0, flDraws ? flFlushMS / flDraws : 0.0,
+		flDrawMS, flFrames ? flDrawMS / flFrames : 0.0, flDraws ? flDrawMS / flDraws : 0.0 );
+	ConMsg( "GL worker present: %4.3fms total (%4.3fms/frame); SwapWindow: %4.3fms total (%4.3fms/frame, stddev %4.3fms)\n",
+		flPresentMS, flFrames ? flPresentMS / flFrames : 0.0,
+		s_WorkerPerfStats.m_flSwapWindowTime, flSwapMean, sqrt( flSwapVariance > 0.0 ? flSwapVariance : 0.0 ) );
+	ConMsg( "GL worker targets: UpdateFBO: %llu calls, %4.3fms (%4.3fms/frame); Clear: %llu calls, %4.3fms (%4.3fms/frame); StretchRect: %llu calls, %4.3fms (%4.3fms/frame)\n",
+		(unsigned long long)s_WorkerPerfStats.m_nUpdateFBOs,
+		flUpdateFBOMS, flFrames ? flUpdateFBOMS / flFrames : 0.0,
+		(unsigned long long)s_WorkerPerfStats.m_nClears,
+		flClearMS, flFrames ? flClearMS / flFrames : 0.0,
+		(unsigned long long)s_WorkerPerfStats.m_nStretchRects,
+		flStretchRectMS, flFrames ? flStretchRectMS / flFrames : 0.0 );
+
+	if ( ( pArgs ) && ( pArgs->ArgC() == 2 ) && ( pArgs->Arg(1)[0] != '0' ) )
+	{
+		s_WorkerPerfStats.Reset();
+	}
+#endif
+
 	ConMsg( "Totals:\n" );
 	m_ObjectStats.m_nTotalFBOs = m_pFBOs->Count();
 	PrintObjectStats( m_ObjectStats );
@@ -3061,7 +3182,21 @@ HRESULT IDirect3DDevice9::Present(CONST RECT* pSourceRect,CONST RECT* pDestRect,
 	tm.Start();
 #endif
 
+#if GLM_WORKER_PERF_ANALYSIS
+	CFastTimer workerPresentTimer;
+	workerPresentTimer.Start();
+#endif
 	m_ctx->Present( m_pDefaultColorSurface->m_tex );
+#if GLM_WORKER_PERF_ANALYSIS
+	workerPresentTimer.End();
+	s_WorkerPerfStats.m_PresentTime += workerPresentTimer.GetDuration();
+
+	const double flWorkerSwapWindowTime = g_pLauncherMgr->GetPrevGLSwapWindowTime();
+	s_WorkerPerfStats.m_flSwapWindowTime += flWorkerSwapWindowTime;
+	s_WorkerPerfStats.m_flSwapWindowTimeSquared += flWorkerSwapWindowTime * flWorkerSwapWindowTime;
+	++s_WorkerPerfStats.m_nFrames;
+	s_WorkerPerfStats.m_nBatches += g_nTotalDrawsOrClears;
+#endif
 		
 #if GL_BATCH_PERF_ANALYSIS
 	double flPresentTime = tm.GetDurationInProgress().GetMillisecondsF();
@@ -3282,6 +3417,10 @@ HRESULT IDirect3DDevice9::CreateRenderTarget(UINT Width,UINT Height,D3DFORMAT Fo
 void IDirect3DDevice9::UpdateBoundFBO()
 {
 	VPROF_BUDGET( "ToGL_UpdateFBO", "ToGL_UpdateFBO" );
+#if GLM_WORKER_PERF_ANALYSIS
+	CGLMWorkerPerfTimer updateFBOTimer( s_WorkerPerfStats.m_UpdateFBOTime );
+	++s_WorkerPerfStats.m_nUpdateFBOs;
+#endif
 	RenderTargetState_t renderTargetState;
 	for ( uint i = 0; i < 4; i++ )
 	{
@@ -3709,6 +3848,10 @@ HRESULT IDirect3DDevice9::StretchRect(IDirect3DSurface9* pSourceSurface,CONST RE
 {
 	GL_BATCH_PERF_CALL_TIMER;
 	GL_PUBLIC_ENTRYPOINT_CHECKS( this );
+#if GLM_WORKER_PERF_ANALYSIS
+	CGLMWorkerPerfTimer stretchRectTimer( s_WorkerPerfStats.m_StretchRectTime );
+	++s_WorkerPerfStats.m_nStretchRects;
+#endif
 	// find relevant slices in GLM tex
 
 	if ( m_bFBODirty )
@@ -4443,7 +4586,11 @@ HRESULT IDirect3DDevice9::SetVertexShaderNonInline(IDirect3DVertexShader9* pShad
 	GL_BATCH_PERF_CALL_TIMER;
 	GL_PUBLIC_ENTRYPOINT_CHECKS( this );
 	m_ctx->SetVertexProgram( pShader ? pShader->m_vtxProgram : NULL );
-	m_vertexShader = pShader;
+	if ( m_vertexShader != pShader )
+	{
+		m_vertexShader = pShader;
+		++m_nVertexInputRevision;
+	}
 	return S_OK;
 }
 
@@ -4699,7 +4846,11 @@ HRESULT IDirect3DDevice9::SetVertexDeclarationNonInline(IDirect3DVertexDeclarati
 {
 	GL_BATCH_PERF_CALL_TIMER;
 	GL_PUBLIC_ENTRYPOINT_CHECKS( this );
-	m_pVertDecl = pDecl;
+	if ( m_pVertDecl != pDecl )
+	{
+		m_pVertDecl = pDecl;
+		++m_nVertexInputRevision;
+	}
 	return S_OK;
 }
 
@@ -4745,19 +4896,26 @@ HRESULT IDirect3DDevice9::SetStreamSourceNonInline(UINT StreamNumber,IDirect3DVe
 	{
 		OffsetInBytes = 0;
 		Stride = 0;
-		
-		m_vtx_buffers[ StreamNumber ] = m_pDummy_vtx_buffer;
 	}
 	else
 	{
 		// We do not support strides of 0
 		Assert( Stride > 0 );
-		m_vtx_buffers[ StreamNumber ] = pStreamData->m_vtxBuffer;
 	}
 
-	m_streams[ StreamNumber ].m_vtxBuffer = pStreamData;
-	m_streams[ StreamNumber ].m_offset	= OffsetInBytes;
-	m_streams[ StreamNumber ].m_stride	= Stride;
+	CGLMBuffer *pGLBuffer = pStreamData ? pStreamData->m_vtxBuffer : m_pDummy_vtx_buffer;
+	D3DStreamDesc &stream = m_streams[ StreamNumber ];
+	if ( stream.m_vtxBuffer != pStreamData ||
+		stream.m_offset != OffsetInBytes ||
+		stream.m_stride != Stride ||
+		m_vtx_buffers[ StreamNumber ] != pGLBuffer )
+	{
+		stream.m_vtxBuffer = pStreamData;
+		stream.m_offset = OffsetInBytes;
+		stream.m_stride = Stride;
+		m_vtx_buffers[ StreamNumber ] = pGLBuffer;
+		++m_nVertexInputRevision;
+	}
 		
 	return S_OK;
 }
@@ -5450,6 +5608,10 @@ HRESULT IDirect3DDevice9::DrawIndexedPrimitive( D3DPRIMITIVETYPE Type, INT BaseV
 
 	g_nTotalDrawsOrClears++;
 
+#if GLM_WORKER_PERF_ANALYSIS
+	s_WorkerPerfStats.m_nPrimitives += primCount;
+#endif
+
 #if GL_BATCH_PERF_ANALYSIS
 	m_nTotalPrims += primCount;
 	CFastTimer tm;
@@ -5470,8 +5632,21 @@ HRESULT IDirect3DDevice9::DrawIndexedPrimitive( D3DPRIMITIVETYPE Type, INT BaseV
 	
 	{
 		GL_BATCH_PERF_CALL_TIMER;
-								
+
+#if GLM_WORKER_PERF_ANALYSIS
+		const void *pProgramPairBeforeFlush = m_ctx->m_pBoundPair;
+		CFastTimer flushDrawStatesTimer;
+		flushDrawStatesTimer.Start();
+#endif
 		m_ctx->FlushDrawStates( MinVertexIndex, MinVertexIndex + NumVertices - 1, BaseVertexIndex );
+#if GLM_WORKER_PERF_ANALYSIS
+		flushDrawStatesTimer.End();
+		s_WorkerPerfStats.m_FlushDrawStatesTime += flushDrawStatesTimer.GetDuration();
+		if ( pProgramPairBeforeFlush != m_ctx->m_pBoundPair )
+		{
+			++s_WorkerPerfStats.m_nProgramChanges;
+		}
+#endif
 
 		{
 #if !GL_TELEMETRY_ZONES && GL_BATCH_TELEMETRY_ZONES
@@ -5500,7 +5675,16 @@ HRESULT IDirect3DDevice9::DrawIndexedPrimitive( D3DPRIMITIVETYPE Type, INT BaseV
 				Assert( p.m_nType );
 				Assert( NumVertices >= 1 );
 
+#if GLM_WORKER_PERF_ANALYSIS
+				CFastTimer glDrawTimer;
+				glDrawTimer.Start();
+#endif
 				m_ctx->DrawRangeElements( p.m_nType, (GLuint)MinVertexIndex, (GLuint)( MinVertexIndex + NumVertices - 1 ), (GLsizei)p.m_nPrimAdd + primCount * p.m_nPrimMul, (GLenum)GL_UNSIGNED_SHORT, (const GLvoid *)( startIndex * sizeof(short) ), BaseVertexIndex, m_indices.m_idxBuffer->m_idxBuffer );
+#if GLM_WORKER_PERF_ANALYSIS
+				glDrawTimer.End();
+				s_WorkerPerfStats.m_GLDrawTime += glDrawTimer.GetDuration();
+				++s_WorkerPerfStats.m_nProfiledDraws;
+#endif
 			}
 		}
 	}
@@ -5814,6 +5998,10 @@ void	d3drect_to_glmbox( D3DRECT *src, GLScissorBox_t *dst )
 HRESULT IDirect3DDevice9::Clear(DWORD Count,CONST D3DRECT* pRects,DWORD Flags,D3DCOLOR Color,float Z,DWORD Stencil)
 {
 	GL_BATCH_PERF_CALL_TIMER;
+#if GLM_WORKER_PERF_ANALYSIS
+	CGLMWorkerPerfTimer clearTimer( s_WorkerPerfStats.m_ClearTime );
+	++s_WorkerPerfStats.m_nClears;
+#endif
 
 	if ( m_bFBODirty )
 	{
@@ -5969,10 +6157,12 @@ HRESULT IDirect3DDevice9::SetClipPlane(DWORD Index,CONST float* pPlane)
 
 		gl.m_ClipPlaneEquation[ Index ] = peq;
 
-		m_ctx->m_flClipPlaneOrig[Index][0] = peq.x;
-		m_ctx->m_flClipPlaneOrig[Index][1] = peq.y;
-		m_ctx->m_flClipPlaneOrig[Index][2] = peq.z;
-		m_ctx->m_flClipPlaneOrig[Index][3] = peq.w;
+		const float plane[4] = { peq.x, peq.y, peq.z, peq.w };
+		if ( memcmp( m_ctx->m_flClipPlaneOrig[Index], plane, sizeof(plane) ) != 0 )
+		{
+			memcpy( m_ctx->m_flClipPlaneOrig[Index], plane, sizeof(plane) );
+			++m_ctx->m_nClipPlaneStateRevision;
+		}
 
 		FlushClipPlaneEquation();
 

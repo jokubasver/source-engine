@@ -1154,13 +1154,6 @@ struct GLMVertexSetup
 
 //FIXME magic numbers here
 
-#define	kGLMProgramParamFloat4Limit	256
-#define	kGLMProgramParamBoolLimit	16
-#define	kGLMProgramParamInt4Limit	16
-
-#define	kGLMVertexProgramParamFloat4Limit	256
-#define	kGLMFragmentProgramParamFloat4Limit	256
-
 struct GLMProgramParamsF
 {
 	float	m_values[kGLMProgramParamFloat4Limit][4];		// float4's 256 of them
@@ -1385,6 +1378,7 @@ class GLMContext
 		FORCEINLINE void SetProgramParametersF( EGLMProgramType type, uint baseSlot, float *slotData, uint slotCount );
 		FORCEINLINE void SetProgramParametersB( EGLMProgramType type, uint baseSlot, int  *slotData, uint boolCount );	// take "BOOL" aka int
 		FORCEINLINE void SetProgramParametersI( EGLMProgramType type, uint baseSlot, int  *slotData, uint slotCount );	// take int4s
+		FORCEINLINE uint NewProgramParamRevision();
 
 		// state sync
 		// If lazyUnbinding is true, unbound samplers will not actually be unbound to the GL device.
@@ -1426,7 +1420,12 @@ class GLMContext
 		FORCEINLINE void	WriteCullFrontFace( GLCullFrontFace_t *src ) { m_CullFrontFace.Write( src ); }
 		FORCEINLINE void	WritePolygonMode( GLPolygonMode_t *src ) { m_PolygonMode.Write( src ); }
 		FORCEINLINE void	WriteDepthBias( GLDepthBias_t *src ) { m_DepthBias.Write( src ); }
-		FORCEINLINE void	WriteClipPlaneEnable( GLClipPlaneEnable_t *src, int which ) { m_ClipPlaneEnable.WriteIndex( src, which ); }
+		FORCEINLINE void	WriteClipPlaneEnable( GLClipPlaneEnable_t *src, int which )
+		{
+			if ( !( m_ClipPlaneEnable.GetDataIndex( which ) == *src ) )
+				++m_nClipPlaneStateRevision;
+			m_ClipPlaneEnable.WriteIndex( src, which );
+		}
 		FORCEINLINE void	WriteClipPlaneEquation( GLClipPlaneEquation_t *src, int which ) { m_ClipPlaneEquation.WriteIndex( src, which ); }
 		FORCEINLINE void	WriteScissorEnable( GLScissorEnable_t *src ) { m_ScissorEnable.Write( src ); }
 		FORCEINLINE void	WriteScissorBox( GLScissorBox_t *src ) { m_ScissorBox.Write( src ); }
@@ -1549,9 +1548,7 @@ class GLMContext
 		struct CurAttribs_t
 		{
 			uint m_nTotalBufferRevision;
-			IDirect3DVertexDeclaration9	*m_pVertDecl;
-			D3DStreamDesc m_streams[ D3D_MAX_STREAMS ];
-			uint64 m_vtxAttribMap[2];
+			uint m_nVertexInputRevision;
 		};
 
 		CurAttribs_t m_CurAttribs;
@@ -1559,10 +1556,7 @@ class GLMContext
 		FORCEINLINE void ClearCurAttribs() 
 		{ 
 			m_CurAttribs.m_nTotalBufferRevision = 0;
-			m_CurAttribs.m_pVertDecl = NULL;
-			memset( m_CurAttribs.m_streams, 0, sizeof( m_CurAttribs.m_streams ) );
-			m_CurAttribs.m_vtxAttribMap[0] = 0xBBBBBBBBBBBBBBBBULL;
-			m_CurAttribs.m_vtxAttribMap[1] = 0xBBBBBBBBBBBBBBBBULL;
+			m_CurAttribs.m_nVertexInputRevision = 0xFFFFFFFF;
 		}
 		
 		FORCEINLINE void ReleasedShader() {	NullProgram(); }
@@ -1619,6 +1613,8 @@ class GLMContext
 		uint							m_nThreadOwnershipReleaseCounter;
 
 		bool							m_bUseSamplerObjects;
+		bool							m_bUseDrawElementsBaseVertex;
+		bool							m_bUseProgramParamRevisionCache;
 		bool							m_bTexClientStorage;
 
 		IDirect3DDevice9				*m_pDevice;
@@ -1652,6 +1648,7 @@ class GLMContext
 		GLStateArray<GLClipPlaneEnable_t,kGLMUserClipPlanes> m_ClipPlaneEnable;
 		GLStateArray<GLClipPlaneEquation_t,kGLMUserClipPlanes> m_ClipPlaneEquation;	// dxabstract puts them directly into param slot 253(0) and 254(1)
 		float						m_flClipPlaneOrig[kGLMUserClipPlanes][4];	// original (pre-munge) clip plane equations for shader uniforms
+		uint						m_nClipPlaneStateRevision;
 		
 		GLState<GLScissorEnable_t>		m_ScissorEnable;	
 		GLState<GLScissorBox_t>			m_ScissorBox;
@@ -1739,6 +1736,11 @@ class GLMContext
 		GLMProgramParamsF				m_programParamsF[ kGLMNumProgramTypes ];
 		GLMProgramParamsB				m_programParamsB[ kGLMNumProgramTypes ];
 		GLMProgramParamsI				m_programParamsI[ kGLMNumProgramTypes ];	// two banks, but only the vertex one is used
+		uint							m_nProgramParamRevision;
+		uint							m_nProgramParamRevisionEpoch;
+		uint							m_programParamRevisionF[kGLMNumProgramTypes][kGLMProgramParamFloat4Limit];
+		uint							m_programParamRevisionB[kGLMNumProgramTypes];
+		uint							m_programParamRevisionI[kGLMNumProgramTypes];
 		EGLMParamWriteMode				m_paramWriteMode;
 		
 		CGLMProgram						*m_pNullFragmentProgram;		// write opaque black.  Activate when caller asks for null FP
@@ -1945,9 +1947,13 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 		if (hasVP && hasFP)
 		{
 			VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
-			if ( gGL->glDrawRangeElementsBaseVertex )
-		{
-			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
+			if ( m_bUseDrawElementsBaseVertex )
+			{
+				gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
+			}
+			else if ( gGL->glDrawRangeElementsBaseVertex )
+			{
+				gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 		}
 		else
 		{
@@ -1975,7 +1981,11 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 	if ( m_pBoundPair )
 	{
 		VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
-		if ( gGL->glDrawRangeElementsBaseVertex )
+		if ( m_bUseDrawElementsBaseVertex )
+		{
+			gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
+		}
+		else if ( gGL->glDrawRangeElementsBaseVertex )
 		{
 			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 		}
@@ -2026,6 +2036,27 @@ FORCEINLINE void GLMContext::SetFragmentProgram( CGLMProgram *pProg )
 
 // "slot" means a vec4-sized thing
 // these write into .env parameter space
+FORCEINLINE uint GLMContext::NewProgramParamRevision()
+{
+	++m_nProgramParamRevision;
+	if ( !m_nProgramParamRevision )
+	{
+		// A 32-bit serial is compact enough to keep one revision per logical
+		// slot in every linked pair.  On the extremely rare wrap, move to a new
+		// epoch and invalidate the context-side serials; every pair will then
+		// take one full refresh before comparisons resume.
+		m_nProgramParamRevision = 1;
+		++m_nProgramParamRevisionEpoch;
+		if ( !m_nProgramParamRevisionEpoch )
+			m_nProgramParamRevisionEpoch = 1;
+
+		memset( m_programParamRevisionF, 0, sizeof( m_programParamRevisionF ) );
+		memset( m_programParamRevisionB, 0, sizeof( m_programParamRevisionB ) );
+		memset( m_programParamRevisionI, 0, sizeof( m_programParamRevisionI ) );
+	}
+	return m_nProgramParamRevision;
+}
+
 FORCEINLINE void GLMContext::SetProgramParametersF( EGLMProgramType type, uint baseSlot, float *slotData, uint slotCount )
 {
 #if GLMDEBUG
@@ -2046,22 +2077,32 @@ FORCEINLINE void GLMContext::SetProgramParametersF( EGLMProgramType type, uint b
 	}
 #endif
 
-	// Value-compare: Source re-sets the same projection/view/lighting/material
-	// constants on most draw calls.  On a CPU-bound dual-core A35, skipping the
-	// memcpy AND the dirty-mark raise (which would force a glUniform4fv upload of
-	// the full firstDirty..highWater range at flush time) when the data is
-	// unchanged is the single biggest per-draw-call CPU saving available.
-	// The memcmp cost (a few cycles per vec4) is negligible vs. the avoided
-	// memcpy + GL upload.  If the program changed since last flush, its dirty
-	// range was already reset to [0, highWater] in FlushDrawStates, so the first
-	// draw after a program change still uploads everything correctly.
-	const uint nBytes = (4 * sizeof(float)) * slotCount;
-	if ( memcmp( &m_programParamsF[type].m_values[baseSlot][0], slotData, nBytes ) == 0 )
+	// Compare at float4 granularity.  Source often submits a large constant
+	// range when only one or two slots changed; narrowing the dirty span here
+	// avoids turning that into a large glUniform4fv upload later.
+	uint firstChangedSlot = baseSlot + slotCount;
+	uint changedSlotHighWater = baseSlot;
+	uint revision = 0;
+	for ( uint i = 0; i < slotCount; ++i )
 	{
-		return;
+		float *pDst = &m_programParamsF[type].m_values[baseSlot + i][0];
+		const float *pSrc = slotData + ( i * 4 );
+		if ( memcmp( pDst, pSrc, 4 * sizeof(float) ) != 0 )
+		{
+			if ( !revision )
+				revision = NewProgramParamRevision();
+			memcpy( pDst, pSrc, 4 * sizeof(float) );
+			m_programParamRevisionF[type][baseSlot + i] = revision;
+			firstChangedSlot = MIN( firstChangedSlot, baseSlot + i );
+			changedSlotHighWater = baseSlot + i + 1;
+		}
 	}
 
-	memcpy( &m_programParamsF[type].m_values[baseSlot][0], slotData, nBytes );
+	if ( !revision )
+		return;
+
+	baseSlot = firstChangedSlot;
+	slotCount = changedSlotHighWater - firstChangedSlot;
 
 	if ( ( type == kGLMVertexProgram ) && ( m_bUseBoneUniformBuffers ) )
 	{
@@ -2144,7 +2185,12 @@ FORCEINLINE void GLMContext::SetProgramParametersB( EGLMProgramType type, uint b
 	}
 #endif
 
-	memcpy( &m_programParamsB[type].m_values[baseSlot], slotData, sizeof(int) * boolCount );
+	const uint nBytes = sizeof(int) * boolCount;
+	if ( memcmp( &m_programParamsB[type].m_values[baseSlot], slotData, nBytes ) == 0 )
+		return;
+
+	memcpy( &m_programParamsB[type].m_values[baseSlot], slotData, nBytes );
+	m_programParamRevisionB[type] = NewProgramParamRevision();
 	
 	if ( (baseSlot+boolCount) > m_programParamsB[type].m_dirtySlotCount)
 		m_programParamsB[type].m_dirtySlotCount = baseSlot+boolCount;
@@ -2173,7 +2219,12 @@ FORCEINLINE void GLMContext::SetProgramParametersI( EGLMProgramType type, uint b
 	}
 #endif
 
-	memcpy( &m_programParamsI[type].m_values[baseSlot][0], slotData, (4*sizeof(int)) * slotCount );
+	const uint nBytes = (4 * sizeof(int)) * slotCount;
+	if ( memcmp( &m_programParamsI[type].m_values[baseSlot][0], slotData, nBytes ) == 0 )
+		return;
+
+	memcpy( &m_programParamsI[type].m_values[baseSlot][0], slotData, nBytes );
+	m_programParamRevisionI[type] = NewProgramParamRevision();
 	
 	if ( (baseSlot + slotCount) > m_programParamsI[type].m_dirtySlotCount)
 	{
@@ -2362,6 +2413,21 @@ FORCEINLINE void GLMContext::SetMaxUsedVertexShaderConstantsHint( uint nMaxConst
 	static bool bUseMaxVertexShadeConstantHints = !CommandLine()->CheckParm("-disablemaxvertexshaderconstanthints");
 	if ( bUseMaxVertexShadeConstantHints )
 	{
+		if ( m_bUseBoneUniformBuffers && ( nMaxConstants > (uint)m_nMaxUsedVertexProgramConstantsHint ) )
+		{
+			// A prior draw may have intentionally skipped bone constants above
+			// the old hint.  If the same linked pair now needs more of them,
+			// make the newly live range dirty even when Source re-submits
+			// byte-identical values and SetProgramParametersF returns early.
+			const int nNewBoneHighWater = MIN(
+				(int)nMaxConstants,
+				DXABSTRACT_VS_LAST_BONE_SLOT + 1 ) - DXABSTRACT_VS_FIRST_BONE_SLOT;
+			if ( nNewBoneHighWater > 0 )
+			{
+				m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone =
+					MAX( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone, nNewBoneHighWater );
+			}
+		}
 		m_nMaxUsedVertexProgramConstantsHint = nMaxConstants;
 	}
 }

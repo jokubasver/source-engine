@@ -612,6 +612,7 @@ private:
 
 	IDirect3DVertexDeclaration9	*m_pVertDecl;					// Set by SetVertexDeclaration...
 	D3DStreamDesc				m_streams[ D3D_MAX_STREAMS ];	// Set by SetStreamSource..
+	uint						m_nVertexInputRevision;
 	CGLMBuffer					*m_vtx_buffers[ D3D_MAX_STREAMS ];
 	CGLMBuffer					*m_pDummy_vtx_buffer;
 	D3DIndexDesc				m_indices;						// Set by SetIndices..
@@ -1208,19 +1209,26 @@ FORCEINLINE HRESULT TOGLMETHODCALLTYPE IDirect3DDevice9::SetStreamSource(UINT St
 	{
 		OffsetInBytes = 0;
 		Stride = 0;
-
-		m_vtx_buffers[ StreamNumber ] = m_pDummy_vtx_buffer;
 	}
 	else
 	{
 		// We do not support strides of 0
 		Assert( Stride > 0 );
-		m_vtx_buffers[ StreamNumber ] = pStreamData->m_vtxBuffer;
 	}
 
-	m_streams[ StreamNumber ].m_vtxBuffer = pStreamData;
-	m_streams[ StreamNumber ].m_offset	= OffsetInBytes;
-	m_streams[ StreamNumber ].m_stride	= Stride;
+	CGLMBuffer *pGLBuffer = pStreamData ? pStreamData->m_vtxBuffer : m_pDummy_vtx_buffer;
+	D3DStreamDesc &stream = m_streams[ StreamNumber ];
+	if ( stream.m_vtxBuffer != pStreamData ||
+		stream.m_offset != OffsetInBytes ||
+		stream.m_stride != Stride ||
+		m_vtx_buffers[ StreamNumber ] != pGLBuffer )
+	{
+		stream.m_vtxBuffer = pStreamData;
+		stream.m_offset = OffsetInBytes;
+		stream.m_stride = Stride;
+		m_vtx_buffers[ StreamNumber ] = pGLBuffer;
+		++m_nVertexInputRevision;
+	}
 
 	return S_OK;
 #endif
@@ -1281,7 +1289,11 @@ HRESULT IDirect3DDevice9::SetVertexShader(IDirect3DVertexShader9* pShader)
 #else
 	Assert( GetCurrentOwnerThreadId() == ThreadGetCurrentId() );
 	m_ctx->SetVertexProgram( pShader ? pShader->m_vtxProgram : NULL );
-	m_vertexShader = pShader;
+	if ( m_vertexShader != pShader )
+	{
+		m_vertexShader = pShader;
+		++m_nVertexInputRevision;
+	}
 	return S_OK;
 #endif
 }
@@ -1304,7 +1316,11 @@ FORCEINLINE HRESULT IDirect3DDevice9::SetVertexDeclaration(IDirect3DVertexDeclar
 	return SetVertexDeclarationNonInline(pDecl);
 #else
 	Assert( GetCurrentOwnerThreadId() == ThreadGetCurrentId() );
-	m_pVertDecl = pDecl;
+	if ( m_pVertDecl != pDecl )
+	{
+		m_pVertDecl = pDecl;
+		++m_nVertexInputRevision;
+	}
 	return S_OK;
 #endif
 }

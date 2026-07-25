@@ -395,6 +395,12 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 
 	Msg("GL_EXTENSIONS=\"%s\"\n", m_pGLDriverStrings[cGLExtensionsString]);
 
+	// Preserve the extension result before applying the legacy desktop-driver
+	// policy below. Buffer storage remains explicit opt-in because Source's
+	// shared persistent ring cannot preserve every interleaved dynamic-buffer
+	// update pattern used by the renderer.
+	const bool bDriverSupportsBufferStorage = m_bHave_GL_EXT_buffer_storage;
+
 	// !!! FIXME: Alfred says the original GL_APPLE_fence code only exists to
 	// !!! FIXME:  hint Apple's drivers and not because we rely on the
 	// !!! FIXME:  functionality. If so, just remove this check (and the
@@ -421,8 +427,11 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 			g_bUsePseudoBufs = true;
 		if( CommandLine()->FindParm( "-gl_enable_static_buffer" ) )
 			g_bDisableStaticBuffer = false;
-		if( CommandLine()->FindParm( "-gl_enable_buffer_storage" ) )
+		if ( bDriverSupportsBufferStorage &&
+			CommandLine()->FindParm( "-gl_enable_buffer_storage" ) )
+		{
 			m_bHave_GL_EXT_buffer_storage = true;
+		}
 
 #if 0
 		glBindFramebuffer.Force(glBindFramebuffer.Pointer());

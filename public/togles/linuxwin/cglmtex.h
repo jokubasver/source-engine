@@ -351,8 +351,6 @@ struct GLMTexSamplingParams
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
 		{
 			float effectiveLodBias = m_lodBias;
-			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
-				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
 			gGL->glSamplerParameterf( nSamplerObject, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
 		}
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_COMPARE_MODE_ARB, m_packed.m_compareMode ? GL_COMPARE_R_TO_TEXTURE_ARB : GL_NONE );

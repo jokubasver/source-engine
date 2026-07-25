@@ -14,6 +14,41 @@ FORCEINLINE uint32 bitmix32(uint32 a)
 	return a;
 }
 
+FORCEINLINE void GLMExpandProgramParamRevisionRange(
+	const uint *pCurrentRevisions,
+	const uint *pUploadedRevisions,
+	uint nLogicalStart,
+	uint nPhysicalStart,
+	uint nSlotCount,
+	int &nFirstDirtyPhysicalSlot,
+	int &nDirtyPhysicalSlotHighWater )
+{
+	for ( uint i = 0; i < nSlotCount; ++i )
+	{
+		if ( pCurrentRevisions[nLogicalStart + i] != pUploadedRevisions[nLogicalStart + i] )
+		{
+			const int nPhysicalSlot = (int)( nPhysicalStart + i );
+			nFirstDirtyPhysicalSlot = MIN( nFirstDirtyPhysicalSlot, nPhysicalSlot );
+			nDirtyPhysicalSlotHighWater = MAX( nDirtyPhysicalSlotHighWater, nPhysicalSlot + 1 );
+		}
+	}
+}
+
+FORCEINLINE void GLMCopyProgramParamRevisions(
+	uint *pUploadedRevisions,
+	const uint *pCurrentRevisions,
+	uint nLogicalStart,
+	uint nSlotCount )
+{
+	if ( nSlotCount )
+	{
+		memcpy(
+			pUploadedRevisions + nLogicalStart,
+			pCurrentRevisions + nLogicalStart,
+			nSlotCount * sizeof(uint) );
+	}
+}
+
 #ifndef OSX
 
 FORCEINLINE GLuint GLMContext::FindSamplerObject( const GLMTexSamplingParams &desiredParams )
@@ -181,6 +216,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	}
 #endif
 
+	bool bProgramPairChanged = false;
+	bool bProgramParamEpochMismatch = false;
+	bool bForceFullProgramParamUpload = false;
 	if ( m_bDirtyPrograms )
 	{
 		m_bDirtyPrograms = false;
@@ -189,6 +227,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 		if ( pNewPair != m_pBoundPair )
 		{
+			bProgramPairChanged = true;
 #if GL_BATCH_TELEMETRY_ZONES
 			tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "NewProgram" );
 #endif
@@ -227,22 +266,6 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			m_pBoundPair = pNewPair;
 
-			// set the dirty levels appropriately since the program changed and has never seen any of the current values.
-			m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone = 0;
-			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone = m_drawingProgram[ kGLMVertexProgram ]->m_descs[kGLMGLSL].m_highWater;
-			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone = m_drawingProgram[ kGLMVertexProgram ]->m_descs[kGLMGLSL].m_VSHighWaterBone;
-
-			m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone = 0;
-			m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone = m_drawingProgram[ kGLMFragmentProgram ]->m_descs[kGLMGLSL].m_highWater;
-
-			// bool and int dirty levels get set to max, we don't have actual high water marks for them
-			// code which sends the values must clamp on these types.
-			m_programParamsB[kGLMVertexProgram].m_dirtySlotCount = kGLMProgramParamBoolLimit;
-			m_programParamsB[kGLMFragmentProgram].m_dirtySlotCount = kGLMProgramParamBoolLimit;
-
-			m_programParamsI[kGLMVertexProgram].m_dirtySlotCount = kGLMProgramParamInt4Limit;
-			m_programParamsI[kGLMFragmentProgram].m_dirtySlotCount = 0;
-
 			// check fragment buffers used (MRT)
 			if( pNewPair->m_fragmentProg->m_fragDataMask != m_fragDataMask )
 			{
@@ -252,12 +275,134 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		}
 	}
 
+	// Uniform storage belongs to the linked GL program.  On a pair switch, only
+	// re-upload logical slots whose desired revision differs from what this exact
+	// pair last received.  A new revision epoch (only possible at serial wrap or
+	// after link/relink) deliberately falls back to a complete active-range push.
+	bProgramParamEpochMismatch =
+		( m_pBoundPair->m_nProgramParamRevisionEpoch != m_nProgramParamRevisionEpoch );
+	bForceFullProgramParamUpload =
+		bProgramParamEpochMismatch || ( bProgramPairChanged && !m_bUseProgramParamRevisionCache );
+	if ( bProgramPairChanged || bProgramParamEpochMismatch )
+	{
+		const int nVertexNonBoneHighWater =
+			MIN( (int)m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_highWater,
+				kGLMProgramParamFloat4Limit );
+		const int nVertexBoneHighWater =
+			( m_bUseBoneUniformBuffers && ( m_nMaxUsedVertexProgramConstantsHint > DXABSTRACT_VS_FIRST_BONE_SLOT ) ) ?
+			MIN( (int)m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_VSHighWaterBone,
+				MIN( m_nMaxUsedVertexProgramConstantsHint, DXABSTRACT_VS_LAST_BONE_SLOT + 1 ) - DXABSTRACT_VS_FIRST_BONE_SLOT ) : 0;
+		const int nFragmentHighWater =
+			MIN( (int)m_drawingProgram[kGLMFragmentProgram]->m_descs[kGLMGLSL].m_highWater,
+				kGLMProgramParamFloat4Limit );
+
+		if ( bForceFullProgramParamUpload )
+		{
+			if ( nVertexNonBoneHighWater > 0 )
+			{
+				m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone = 0;
+				m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone =
+					MAX( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone, nVertexNonBoneHighWater );
+			}
+			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone =
+				MAX( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone, nVertexBoneHighWater );
+
+			if ( nFragmentHighWater > 0 )
+			{
+				m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone = 0;
+				m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone =
+					MAX( m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone, nFragmentHighWater );
+			}
+		}
+		else
+		{
+			int nFirstDirty = kGLMProgramParamFloat4Limit;
+			int nDirtyHighWater = 0;
+
+			if ( m_bUseBoneUniformBuffers )
+			{
+				const int nPreBoneCount = MIN( nVertexNonBoneHighWater, DXABSTRACT_VS_FIRST_BONE_SLOT );
+				GLMExpandProgramParamRevisionRange(
+					m_programParamRevisionF[kGLMVertexProgram],
+					m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+					0, 0, nPreBoneCount, nFirstDirty, nDirtyHighWater );
+
+				if ( nVertexNonBoneHighWater > DXABSTRACT_VS_FIRST_BONE_SLOT )
+				{
+					const int nPostBoneCount = MIN(
+						nVertexNonBoneHighWater - DXABSTRACT_VS_FIRST_BONE_SLOT,
+						kGLMProgramParamFloat4Limit - (DXABSTRACT_VS_LAST_BONE_SLOT + 1) );
+					GLMExpandProgramParamRevisionRange(
+						m_programParamRevisionF[kGLMVertexProgram],
+						m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+						DXABSTRACT_VS_LAST_BONE_SLOT + 1,
+						DXABSTRACT_VS_FIRST_BONE_SLOT,
+						nPostBoneCount, nFirstDirty, nDirtyHighWater );
+				}
+			}
+			else
+			{
+				GLMExpandProgramParamRevisionRange(
+					m_programParamRevisionF[kGLMVertexProgram],
+					m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+					0, 0, nVertexNonBoneHighWater, nFirstDirty, nDirtyHighWater );
+			}
+
+			if ( nDirtyHighWater > nFirstDirty )
+			{
+				m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone =
+					MIN( m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone, nFirstDirty );
+				m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone =
+					MAX( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone, nDirtyHighWater );
+			}
+
+			nFirstDirty = 0;
+			nDirtyHighWater = 0;
+			GLMExpandProgramParamRevisionRange(
+				m_programParamRevisionF[kGLMVertexProgram],
+				m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+				DXABSTRACT_VS_FIRST_BONE_SLOT, 0, nVertexBoneHighWater,
+				nFirstDirty, nDirtyHighWater );
+			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone =
+				MAX( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone, nDirtyHighWater );
+
+			nFirstDirty = kGLMProgramParamFloat4Limit;
+			nDirtyHighWater = 0;
+			GLMExpandProgramParamRevisionRange(
+				m_programParamRevisionF[kGLMFragmentProgram],
+				m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMFragmentProgram],
+				0, 0, nFragmentHighWater, nFirstDirty, nDirtyHighWater );
+			if ( nDirtyHighWater > nFirstDirty )
+			{
+				m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone =
+					MIN( m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone, nFirstDirty );
+				m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone =
+					MAX( m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone, nDirtyHighWater );
+			}
+		}
+
+		// Bool/int banks are tiny, so a single revision per stage is sufficient.
+		if ( bForceFullProgramParamUpload ||
+			( m_pBoundPair->m_uploadedProgramParamRevisionB[kGLMVertexProgram] != m_programParamRevisionB[kGLMVertexProgram] ) )
+			m_programParamsB[kGLMVertexProgram].m_dirtySlotCount = kGLMProgramParamBoolLimit;
+		if ( bForceFullProgramParamUpload ||
+			( m_pBoundPair->m_uploadedProgramParamRevisionB[kGLMFragmentProgram] != m_programParamRevisionB[kGLMFragmentProgram] ) )
+			m_programParamsB[kGLMFragmentProgram].m_dirtySlotCount = kGLMProgramParamBoolLimit;
+		if ( bForceFullProgramParamUpload ||
+			( m_pBoundPair->m_uploadedProgramParamRevisionI[kGLMVertexProgram] != m_programParamRevisionI[kGLMVertexProgram] ) )
+			m_programParamsI[kGLMVertexProgram].m_dirtySlotCount = kGLMProgramParamInt4Limit;
+	}
+
 	Assert( m_ViewportBox.GetData().width == (int)( m_ViewportBox.GetData().widthheight & 0xFFFF ) );
 	Assert( m_ViewportBox.GetData().height == (int)( m_ViewportBox.GetData().widthheight >> 16 ) );
 
 	m_pBoundPair->UpdateScreenUniform( m_ViewportBox.GetData().widthheight );
 
-	UpdateClipPlaneUniforms();
+	if ( m_pBoundPair->m_nClipPlaneStateRevision != m_nClipPlaneStateRevision )
+	{
+		UpdateClipPlaneUniforms();
+		m_pBoundPair->m_nClipPlaneStateRevision = m_nClipPlaneStateRevision;
+	}
 	
 	GL_BATCH_PERF( m_FlushStats.m_nNumChangedSamplers += m_nNumDirtySamplers );
 
@@ -369,6 +514,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		{
 			int firstDirtySlot = m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone;
 			int dirtySlotHighWater = MIN( m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_highWater, m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone );
+			const int revisionDirtySlotHighWater = dirtySlotHighWater;
 
 			GLint vconstLoc = m_pBoundPair->m_locVertexParams;
 			if ( ( vconstLoc >= 0 ) && ( dirtySlotHighWater > firstDirtySlot ) )
@@ -407,6 +553,25 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				}
 			}
 
+			const int nPreBoneRevisionHighWater = MIN( revisionDirtySlotHighWater, DXABSTRACT_VS_FIRST_BONE_SLOT );
+			if ( nPreBoneRevisionHighWater > firstDirtySlot )
+			{
+				GLMCopyProgramParamRevisions(
+					m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+					m_programParamRevisionF[kGLMVertexProgram],
+					firstDirtySlot, nPreBoneRevisionHighWater - firstDirtySlot );
+			}
+			if ( revisionDirtySlotHighWater > DXABSTRACT_VS_FIRST_BONE_SLOT )
+			{
+				const int nPostBoneRevisionCount = MIN(
+					revisionDirtySlotHighWater - DXABSTRACT_VS_FIRST_BONE_SLOT,
+					kGLMProgramParamFloat4Limit - (DXABSTRACT_VS_LAST_BONE_SLOT + 1) );
+				GLMCopyProgramParamRevisions(
+					m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+					m_programParamRevisionF[kGLMVertexProgram],
+					DXABSTRACT_VS_LAST_BONE_SLOT + 1, nPostBoneRevisionCount );
+			}
+
 			m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone = 256;
 			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone = 0;
 		}
@@ -414,32 +579,32 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		if ( m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone )
 		{
 			const GLint vconstBoneLoc = m_pBoundPair->m_locVertexBoneParams;
-			if ( vconstBoneLoc >= 0 )
+			int shaderSlotsBone = 0;
+			if ( ( m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_VSHighWaterBone > 0 ) && ( m_nMaxUsedVertexProgramConstantsHint > DXABSTRACT_VS_FIRST_BONE_SLOT ) )
 			{
-				int shaderSlotsBone = 0;
-				if ( ( m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_VSHighWaterBone > 0 ) && ( m_nMaxUsedVertexProgramConstantsHint > DXABSTRACT_VS_FIRST_BONE_SLOT ) )
-				{
-					shaderSlotsBone = MIN( m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_VSHighWaterBone, m_nMaxUsedVertexProgramConstantsHint - DXABSTRACT_VS_FIRST_BONE_SLOT );
-				}
+				shaderSlotsBone = MIN( m_drawingProgram[kGLMVertexProgram]->m_descs[kGLMGLSL].m_VSHighWaterBone, m_nMaxUsedVertexProgramConstantsHint - DXABSTRACT_VS_FIRST_BONE_SLOT );
+			}
 
-				int dirtySlotHighWaterBone = MIN( shaderSlotsBone, m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone );
-				if ( dirtySlotHighWaterBone )
-				{
-					uint nNumBoneRegs = dirtySlotHighWaterBone;
-
+			const int dirtySlotHighWaterBone = MIN( shaderSlotsBone, m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone );
+			if ( ( vconstBoneLoc >= 0 ) && dirtySlotHighWaterBone )
+			{
+				const uint nNumBoneRegs = dirtySlotHighWaterBone;
 #if GL_BATCH_TELEMETRY_ZONES								
-					tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "VSBoneUniformUpdate %u", nNumBoneRegs );
+				tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "VSBoneUniformUpdate %u", nNumBoneRegs );
 #endif
 
-					gGL->glUniform4fv( vconstBoneLoc, nNumBoneRegs, &m_programParamsF[kGLMVertexProgram].m_values[DXABSTRACT_VS_FIRST_BONE_SLOT][0] );
+				gGL->glUniform4fv( vconstBoneLoc, nNumBoneRegs, &m_programParamsF[kGLMVertexProgram].m_values[DXABSTRACT_VS_FIRST_BONE_SLOT][0] );
 
-					GL_BATCH_PERF( m_nTotalVSUniformBoneCalls++; )
-					GL_BATCH_PERF( m_nTotalVSUniformsBoneSet += nNumBoneRegs; )
-					GL_BATCH_PERF( m_FlushStats.m_nNumVSBoneConstants += nNumBoneRegs; )
-				}
-
-				m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone = 0;
+				GL_BATCH_PERF( m_nTotalVSUniformBoneCalls++; )
+				GL_BATCH_PERF( m_nTotalVSUniformsBoneSet += nNumBoneRegs; )
+				GL_BATCH_PERF( m_FlushStats.m_nNumVSBoneConstants += nNumBoneRegs; )
 			}
+
+			GLMCopyProgramParamRevisions(
+				m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+				m_programParamRevisionF[kGLMVertexProgram],
+				DXABSTRACT_VS_FIRST_BONE_SLOT, dirtySlotHighWaterBone );
+			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterBone = 0;
 		}
 
 	}
@@ -467,6 +632,13 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				GL_BATCH_PERF( m_FlushStats.m_nNumVSConstants += (dirtySlotHighWater - firstDirtySlot); )
 			}
 
+			if ( dirtySlotHighWater > firstDirtySlot )
+			{
+				GLMCopyProgramParamRevisions(
+					m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMVertexProgram],
+					m_programParamRevisionF[kGLMVertexProgram],
+					firstDirtySlot, dirtySlotHighWater - firstDirtySlot );
+			}
 			m_programParamsF[kGLMVertexProgram].m_firstDirtySlotNonBone = 256;
 			m_programParamsF[kGLMVertexProgram].m_dirtySlotHighWaterNonBone = 0;
 		}
@@ -519,11 +691,22 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_pBoundPair->m_locAlphaRef != -1 )
 	{
-		if( !m_AlphaTestEnable.GetData().enable )
-			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, 0.0 );
-		else
-			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, m_AlphaTestFunc.GetData().ref );			
+		const float alphaRef = m_AlphaTestEnable.GetData().enable ? m_AlphaTestFunc.GetData().ref : 0.0f;
+		if ( m_pBoundPair->m_alphaRefValue != alphaRef )
+		{
+			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, alphaRef );
+			m_pBoundPair->m_alphaRefValue = alphaRef;
+		}
 	}
+
+	m_pBoundPair->m_uploadedProgramParamRevisionB[kGLMVertexProgram] =
+		m_programParamRevisionB[kGLMVertexProgram];
+	m_pBoundPair->m_uploadedProgramParamRevisionB[kGLMFragmentProgram] =
+		m_programParamRevisionB[kGLMFragmentProgram];
+	m_pBoundPair->m_uploadedProgramParamRevisionI[kGLMVertexProgram] =
+		m_programParamRevisionI[kGLMVertexProgram];
+	m_pBoundPair->m_uploadedProgramParamRevisionI[kGLMFragmentProgram] =
+		m_programParamRevisionI[kGLMFragmentProgram];
 
 	Assert( ( m_pDevice->m_streams[0].m_vtxBuffer && ( m_pDevice->m_streams[0].m_vtxBuffer->m_vtxBuffer == m_pDevice->m_vtx_buffers[0] ) ) || ( ( !m_pDevice->m_streams[0].m_vtxBuffer ) && ( m_pDevice->m_vtx_buffers[0] == m_pDevice->m_pDummy_vtx_buffer ) ) );
 	Assert( ( m_pDevice->m_streams[1].m_vtxBuffer && ( m_pDevice->m_streams[1].m_vtxBuffer->m_vtxBuffer == m_pDevice->m_vtx_buffers[1] ) ) || ( ( !m_pDevice->m_streams[1].m_vtxBuffer ) && ( m_pDevice->m_vtx_buffers[1] == m_pDevice->m_pDummy_vtx_buffer ) ) );
@@ -536,10 +719,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	// If any of these inputs have changed, we need to enumerate through all of the expected GL vertex attribs and modify anything in the GL layer that have changed.
 	// This is not always a win, but it is a net win on NVidia (by 1-4.8% depending on whether driver threading is enabled).
 	if ( ( nCurTotalBufferRevision != m_CurAttribs.m_nTotalBufferRevision ) ||
-		( m_CurAttribs.m_pVertDecl != m_pDevice->m_pVertDecl ) ||
-		( m_CurAttribs.m_vtxAttribMap[0] != reinterpret_cast<const uint64 *>(m_pDevice->m_vertexShader->m_vtxAttribMap)[0] ) ||
-		( m_CurAttribs.m_vtxAttribMap[1] != reinterpret_cast<const uint64 *>(m_pDevice->m_vertexShader->m_vtxAttribMap)[1] ) ||
-		( memcmp( m_CurAttribs.m_streams, m_pDevice->m_streams, sizeof( m_pDevice->m_streams ) ) != 0 ) )
+		( m_CurAttribs.m_nVertexInputRevision != m_pDevice->m_nVertexInputRevision ) )
 	{
 		// This branch is taken 52.2% of the time in the L4D2 test1 (long) timedemo.
 
@@ -548,10 +728,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 #endif
 
 		m_CurAttribs.m_nTotalBufferRevision = nCurTotalBufferRevision;
-		m_CurAttribs.m_pVertDecl = m_pDevice->m_pVertDecl;
-		m_CurAttribs.m_vtxAttribMap[0] = reinterpret_cast<const uint64 *>(m_pDevice->m_vertexShader->m_vtxAttribMap)[0];
-		m_CurAttribs.m_vtxAttribMap[1] = reinterpret_cast<const uint64 *>(m_pDevice->m_vertexShader->m_vtxAttribMap)[1];
-		memcpy( m_CurAttribs.m_streams, m_pDevice->m_streams, sizeof( m_pDevice->m_streams ) );
+		m_CurAttribs.m_nVertexInputRevision = m_pDevice->m_nVertexInputRevision;
 
 		unsigned char *pVertexShaderAttribMap = m_pDevice->m_vertexShader->m_vtxAttribMap;
 		const int nMaxVertexAttributesToCheck = m_drawingProgram[ kGLMVertexProgram ]->m_maxVertexAttrs;
@@ -632,15 +809,12 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	// fragment stage --------------------------------------------------------------------
 	if ( m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone )
 	{
-		GLint fconstLoc;
-		fconstLoc = m_pBoundPair->m_locFragmentParams;
+		const GLint fconstLoc = m_pBoundPair->m_locFragmentParams;
+		const int nMaxUsedShaderSlots = m_drawingProgram[kGLMFragmentProgram]->m_descs[kGLMGLSL].m_highWater;
+		const int firstDirtySlot = m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone;
+		const int dirtySlotHighWater = MIN( nMaxUsedShaderSlots, m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone );
 		if ( fconstLoc >= 0 )
 		{
-			const int nMaxUsedShaderSlots = m_drawingProgram[kGLMFragmentProgram]->m_descs[kGLMGLSL].m_highWater;
-
-			int firstDirtySlot = m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone;
-			int dirtySlotHighWater = MIN( nMaxUsedShaderSlots, m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone );
-
 			if ( dirtySlotHighWater > firstDirtySlot )
 			{
 #if GL_BATCH_TELEMETRY_ZONES
@@ -655,10 +829,20 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				GL_BATCH_PERF( m_FlushStats.m_nFirstPSConstant = firstDirtySlot; )
 				GL_BATCH_PERF( m_FlushStats.m_nNumPSConstants += (dirtySlotHighWater - firstDirtySlot); )
 			}
-			m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone = 256;
-			m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone = 0;
 		}
+
+		if ( dirtySlotHighWater > firstDirtySlot )
+		{
+			GLMCopyProgramParamRevisions(
+				m_pBoundPair->m_uploadedProgramParamRevisionF[kGLMFragmentProgram],
+				m_programParamRevisionF[kGLMFragmentProgram],
+				firstDirtySlot, dirtySlotHighWater - firstDirtySlot );
+		}
+		m_programParamsF[kGLMFragmentProgram].m_firstDirtySlotNonBone = 256;
+		m_programParamsF[kGLMFragmentProgram].m_dirtySlotHighWaterNonBone = 0;
 	}
+
+	m_pBoundPair->m_nProgramParamRevisionEpoch = m_nProgramParamRevisionEpoch;
 
 	return;
 

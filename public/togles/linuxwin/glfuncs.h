@@ -67,7 +67,8 @@ GL_FUNC_VOID(OpenGL,true,glDeleteSync,(GLsync a),(a))
 GL_FUNC(OpenGL,true,GLsync,glFenceSync,(GLenum a, GLbitfield b),(a,b))
 
 #if 1 //ifndef OSX // 10.6/GL 2.1 compatability
-GL_FUNC_VOID(OpenGL,true,glDrawRangeElementsBaseVertex,(GLenum a,GLuint b,GLuint c,GLsizei d,GLenum e,const GLvoid *f, GLenum g),(a,b,c,d,e,f,g))
+GL_FUNC_VOID(OpenGL,false,glDrawElementsBaseVertex,(GLenum a,GLsizei b,GLenum c,const GLvoid *d, GLint e),(a,b,c,d,e))
+GL_FUNC_VOID(OpenGL,true,glDrawRangeElementsBaseVertex,(GLenum a,GLuint b,GLuint c,GLsizei d,GLenum e,const GLvoid *f, GLint g),(a,b,c,d,e,f,g))
 #endif
 GL_FUNC_VOID(OpenGL,true,glEnable,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,true,glEnableVertexAttribArray,(GLuint a),(a))
@@ -180,6 +181,10 @@ GL_FUNC_VOID(GL_ARB_framebuffer_object,false,glBlitFramebuffer,(GLint a,GLint b,
 GL_FUNC_VOID(GL_ARB_framebuffer_object,false,glRenderbufferStorageMultisample,(GLenum a,GLsizei b,GLenum c,GLsizei d,GLsizei e),(a,b,c,d,e))
 */
 GL_FUNC_VOID(OpenGL,false,glBindFramebuffer,(GLenum a,GLuint b),(a,b))
+// Core in GLES 3.0. Keep it under a dedicated capability so a legacy desktop
+// context without the symbol cannot clear the base OpenGL capability flag.
+GL_EXT(GL_ES_framebuffer_invalidate,3,0)
+GL_FUNC_VOID(GL_ES_framebuffer_invalidate,false,glInvalidateFramebuffer,(GLenum a,GLsizei b,const GLenum *c),(a,b,c))
 GL_FUNC_VOID(OpenGL,false,glBindRenderbuffer,(GLenum a,GLuint b),(a,b))
 GL_FUNC(OpenGL,false,GLenum,glCheckFramebufferStatus,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,false,glDeleteRenderbuffers,(GLsizei a,const GLuint *b),(a,b))

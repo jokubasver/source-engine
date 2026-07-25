@@ -27,6 +27,7 @@
 //===============================================================================
 
 #include "togles/rendermechanism.h"
+#include "tier0/icommandline.h"
 
 // memdbgon -must- be the last include file in a .cpp file.
 #include "tier0/memdbgon.h"
@@ -51,6 +52,98 @@ bool g_bDisableStaticBuffer = true; //( Plat_GetCommandLineA() ) ? ( strstr( Pla
 // #define REPORT_LOCK_TIME	0
 
 ConVar gl_bufmode( "gl_bufmode", "1" );
+
+#define GLM_BUFFER_PERF_ANALYSIS 0
+
+#if GLM_BUFFER_PERF_ANALYSIS
+struct CGLMBufferPerfStats
+{
+	CCycleCount m_LockTime;
+	CCycleCount m_UnlockTime;
+	CCycleCount m_PseudoCopyTime;
+	uint64 m_nLocks;
+	uint64 m_nUnlocks;
+	uint64 m_nPseudoLocks;
+	uint64 m_nPseudoUnlocks;
+	uint64 m_nDiscards;
+	uint64 m_nNoOverwrites;
+	uint64 m_nVertexBytes;
+	uint64 m_nIndexBytes;
+	uint64 m_nOtherBytes;
+	uint64 m_nPseudoCopyCalls;
+	uint64 m_nPseudoCopyBytes;
+
+	void Reset()
+	{
+		m_LockTime.Init();
+		m_UnlockTime.Init();
+		m_PseudoCopyTime.Init();
+		m_nLocks = 0;
+		m_nUnlocks = 0;
+		m_nPseudoLocks = 0;
+		m_nPseudoUnlocks = 0;
+		m_nDiscards = 0;
+		m_nNoOverwrites = 0;
+		m_nVertexBytes = 0;
+		m_nIndexBytes = 0;
+		m_nOtherBytes = 0;
+		m_nPseudoCopyCalls = 0;
+		m_nPseudoCopyBytes = 0;
+	}
+};
+
+static CGLMBufferPerfStats s_BufferPerfStats;
+
+class CGLMBufferPerfTimer
+{
+public:
+	explicit CGLMBufferPerfTimer( CCycleCount &total )
+		: m_Total( total )
+	{
+		m_Timer.Start();
+	}
+
+	~CGLMBufferPerfTimer()
+	{
+		m_Timer.End();
+		m_Total += m_Timer.GetDuration();
+	}
+
+private:
+	CFastTimer m_Timer;
+	CCycleCount &m_Total;
+};
+
+CON_COMMAND( gl_dump_buffer_stats, "Print GL buffer lock/upload time; pass 1 to reset after printing." )
+{
+	const double flLockMS = s_BufferPerfStats.m_LockTime.GetMillisecondsF();
+	const double flUnlockMS = s_BufferPerfStats.m_UnlockTime.GetMillisecondsF();
+	const double flCopyMS = s_BufferPerfStats.m_PseudoCopyTime.GetMillisecondsF();
+	ConMsg( "GL buffers: Locks: %llu (%llu pseudo), %4.3fms (%4.6fms/call); Unlocks: %llu (%llu pseudo), %4.3fms (%4.6fms/call)\n",
+		(unsigned long long)s_BufferPerfStats.m_nLocks,
+		(unsigned long long)s_BufferPerfStats.m_nPseudoLocks,
+		flLockMS,
+		s_BufferPerfStats.m_nLocks ? flLockMS / s_BufferPerfStats.m_nLocks : 0.0,
+		(unsigned long long)s_BufferPerfStats.m_nUnlocks,
+		(unsigned long long)s_BufferPerfStats.m_nPseudoUnlocks,
+		flUnlockMS,
+		s_BufferPerfStats.m_nUnlocks ? flUnlockMS / s_BufferPerfStats.m_nUnlocks : 0.0 );
+	ConMsg( "GL buffer traffic: Vertex: %llu bytes, Index: %llu bytes, Other: %llu bytes; Discards: %llu NoOverwrite: %llu; pseudo memcpy: %llu calls, %llu bytes, %4.3fms\n",
+		(unsigned long long)s_BufferPerfStats.m_nVertexBytes,
+		(unsigned long long)s_BufferPerfStats.m_nIndexBytes,
+		(unsigned long long)s_BufferPerfStats.m_nOtherBytes,
+		(unsigned long long)s_BufferPerfStats.m_nDiscards,
+		(unsigned long long)s_BufferPerfStats.m_nNoOverwrites,
+		(unsigned long long)s_BufferPerfStats.m_nPseudoCopyCalls,
+		(unsigned long long)s_BufferPerfStats.m_nPseudoCopyBytes,
+		flCopyMS );
+
+	if ( args.ArgC() == 2 && args.Arg(1)[0] != '0' )
+	{
+		s_BufferPerfStats.Reset();
+	}
+}
+#endif
 
 char ALIGN16 CGLMBuffer::m_StaticBuffers[ GL_MAX_STATIC_BUFFERS ][ GL_STATIC_BUFFER_SIZE ] ALIGN16_POST;
 bool CGLMBuffer::m_bStaticBufferUsed[ GL_MAX_STATIC_BUFFERS ];
@@ -472,17 +565,30 @@ CGLMBuffer::CGLMBuffer( GLMContext *pCtx, EGLMBufferType type, uint size, uint o
 	m_bPseudo = true;
 #endif
 
-	// Mali-G31 (Bifrost) is UMA: client memory and GPU memory are the same.
-	// Pseudo-buffers allocate directly in client memory and avoid all GL driver
-	// overhead, which is optimal on UMA. GL_EXT_buffer_storage is disabled by
-	// default for all GPUs (see glentrypoints.cpp); the persistent ring-buffer
-	// path requires per-frame fence syncs for correct ring advance which adds
-	// driver overhead with no benefit on UMA Mali. Pseudo-buffers (m_bPseudo)
-	// are checked first and win for all dynamic buffers on ARM.
+	// Pseudo-buffers are the known-correct and faster default on this Mali
+	// target. The shared persistent ring is not safe for Source's interleaved
+	// NOOVERWRITE lock patterns: moving one logical buffer's base can orphan
+	// ranges that later draws still reference.
 	if( V_stristr(gGL->m_pGLDriverStrings[cGLVendorString], "arm") != NULL )
 	{
-		g_bUsePseudoBufs = true; // client-side buffers avoid Mali sync overhead
-		g_bDisableStaticBuffer = true; // static buffers don't help on Mali
+		if ( CommandLine()->CheckParm( "-gl_enable_pseudobufs" ) )
+			g_bUsePseudoBufs = true;
+		else
+			g_bUsePseudoBufs = !CommandLine()->CheckParm( "-gl_disable_pseudobufs" );
+
+		g_bDisableStaticBuffer = true;
+	}
+
+	if ( m_bDynamic )
+	{
+		static bool s_bReportedDynamicBufferMode = false;
+		if ( !s_bReportedDynamicBufferMode )
+		{
+			const char *pMode = g_bUsePseudoBufs ? "pseudo/client memory" :
+				( gGL->m_bHave_GL_EXT_buffer_storage ? "persistent mapped VBO ring" : "ordinary mapped VBO" );
+			Msg( "GL dynamic buffer mode: %s\n", pMode );
+			s_bReportedDynamicBufferMode = true;
+		}
 	}
 
 #if GL_ENABLE_INDEX_VERIFICATION
@@ -661,6 +767,22 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 #if GL_TELEMETRY_GPU_ZONES
 	CScopedGLMPIXEvent glmPIXEvent( "CGLMBuffer::Lock" );
 	g_TelemetryGPUStats.m_nTotalBufferLocksAndUnlocks++;
+#endif
+#if GLM_BUFFER_PERF_ANALYSIS
+	CGLMBufferPerfTimer bufferLockTimer( s_BufferPerfStats.m_LockTime );
+	++s_BufferPerfStats.m_nLocks;
+	if ( m_bPseudo )
+	{
+		++s_BufferPerfStats.m_nPseudoLocks;
+	}
+	if ( pParams->m_bDiscard )
+	{
+		++s_BufferPerfStats.m_nDiscards;
+	}
+	if ( pParams->m_bNoOverwrite )
+	{
+		++s_BufferPerfStats.m_nNoOverwrites;
+	}
 #endif
 
 	char *resultPtr = NULL;
@@ -925,6 +1047,14 @@ void CGLMBuffer::Unlock( int nActualSize, const void *pActualData )
 	CScopedGLMPIXEvent glmPIXEvent( "CGLMBuffer::Unlock" );
 	g_TelemetryGPUStats.m_nTotalBufferLocksAndUnlocks++;
 #endif
+#if GLM_BUFFER_PERF_ANALYSIS
+	CGLMBufferPerfTimer bufferUnlockTimer( s_BufferPerfStats.m_UnlockTime );
+	++s_BufferPerfStats.m_nUnlocks;
+	if ( m_bPseudo )
+	{
+		++s_BufferPerfStats.m_nPseudoUnlocks;
+	}
+#endif
 
 	m_pCtx->CheckCurrent();
 	
@@ -944,6 +1074,21 @@ void CGLMBuffer::Unlock( int nActualSize, const void *pActualData )
 		DXABSTRACT_BREAK_ON_ERROR();
 		return;
 	}
+
+#if GLM_BUFFER_PERF_ANALYSIS
+	switch ( m_type )
+	{
+		case kGLMVertexBuffer:
+			s_BufferPerfStats.m_nVertexBytes += nActualSize;
+			break;
+		case kGLMIndexBuffer:
+			s_BufferPerfStats.m_nIndexBytes += nActualSize;
+			break;
+		default:
+			s_BufferPerfStats.m_nOtherBytes += nActualSize;
+			break;
+	}
+#endif
 
 #if GL_ENABLE_UNLOCK_BUFFER_OVERWRITE_DETECTION
 	if ( m_bPseudo )
@@ -1082,6 +1227,11 @@ void CGLMBuffer::Unlock( int nActualSize, const void *pActualData )
 	{
 		if ( pActualData )
 		{
+#if GLM_BUFFER_PERF_ANALYSIS
+			CGLMBufferPerfTimer pseudoCopyTimer( s_BufferPerfStats.m_PseudoCopyTime );
+			++s_BufferPerfStats.m_nPseudoCopyCalls;
+			s_BufferPerfStats.m_nPseudoCopyBytes += nActualSize;
+#endif
 			memcpy( m_pLastMappedAddress, pActualData, nActualSize );
 		}
 

@@ -706,6 +706,7 @@ CGLMShaderPair::CGLMShaderPair( GLMContext *ctx  )
 
 	m_locVertexParams = -1;
 	m_locAlphaRef = -1;
+	m_alphaRefValue = -1.0f;
 	m_locVertexBoneParams = -1;
 	m_locVertexScreenParams = -1;
 	m_nScreenWidthHeight = 0xFFFFFFFF;
@@ -713,6 +714,7 @@ CGLMShaderPair::CGLMShaderPair( GLMContext *ctx  )
 	m_locClipPlane1 = -1;
 	memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
 	memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
+	m_nClipPlaneStateRevision = 0xFFFFFFFF;
 	m_locVertexInteger0 = -1;	// "i0"
 	memset( m_locVertexBool, 0xFF, sizeof( m_locVertexBool ) );
 	memset( m_locFragmentBool, 0xFF, sizeof( m_locFragmentBool ) );
@@ -728,6 +730,10 @@ CGLMShaderPair::CGLMShaderPair( GLMContext *ctx  )
 	m_valid = false;
 	m_bCheckLinkStatus = false;
 	m_revision = 0;				// bumps to 1 once linked
+	m_nProgramParamRevisionEpoch = 0;
+	memset( m_uploadedProgramParamRevisionF, 0xFF, sizeof( m_uploadedProgramParamRevisionF ) );
+	memset( m_uploadedProgramParamRevisionB, 0xFF, sizeof( m_uploadedProgramParamRevisionB ) );
+	memset( m_uploadedProgramParamRevisionI, 0xFF, sizeof( m_uploadedProgramParamRevisionI ) );
 }
 
 CGLMShaderPair::~CGLMShaderPair( )
@@ -810,10 +816,12 @@ bool CGLMShaderPair::ValidateProgramPair()
 			m_locClipPlane1 = gGL->glGetUniformLocation( m_program, "uClipPlane1" );
 			if( !gGL->m_bHave_GL_QCOM_alpha_test )
 				m_locAlphaRef = gGL->glGetUniformLocation( m_program, "alpha_ref" );
+			m_alphaRefValue = -1.0f;
 
 			m_nScreenWidthHeight = 0xFFFFFFFF;
 			memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
 			memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
+			m_nClipPlaneStateRevision = 0xFFFFFFFF;
 
 			m_locVertexInteger0 = gGL->glGetUniformLocation( m_program, "i0" );
 
@@ -888,6 +896,8 @@ bool CGLMShaderPair::ValidateProgramPair()
 		else
 		{
 			m_locVertexParams = -1;
+			m_locAlphaRef = -1;
+			m_alphaRefValue = -1.0f;
 			m_locVertexBoneParams = -1;
 			m_locVertexScreenParams = -1;
 			m_locClipPlane0 = -1;
@@ -895,6 +905,7 @@ bool CGLMShaderPair::ValidateProgramPair()
 			m_nScreenWidthHeight = 0xFFFFFFFF;
 			memset( m_flClipPlaneUploaded, 0, sizeof( m_flClipPlaneUploaded ) );
 			memset( m_bClipPlaneUploaded, 0, sizeof( m_bClipPlaneUploaded ) );
+			m_nClipPlaneStateRevision = 0xFFFFFFFF;
 
 			m_locVertexInteger0 = -1;
 			memset( m_locVertexBool, 0xFF, sizeof(m_locVertexBool) );
@@ -1081,6 +1092,13 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 	}
 	
 	m_valid	= false;			// assume failure
+	// Linking creates fresh uniform storage even when the CGLMShaderPair object
+	// itself is reused.  Force one complete refresh in the context's current
+	// revision epoch before any pair-local comparisons are trusted.
+	m_nProgramParamRevisionEpoch = 0;
+	memset( m_uploadedProgramParamRevisionF, 0xFF, sizeof( m_uploadedProgramParamRevisionF ) );
+	memset( m_uploadedProgramParamRevisionB, 0xFF, sizeof( m_uploadedProgramParamRevisionB ) );
+	memset( m_uploadedProgramParamRevisionI, 0xFF, sizeof( m_uploadedProgramParamRevisionI ) );
 	
 	// No need to check that vp and fp are valid at this point (ie shader compile succeed)
 	// It is permissible to attach a shader object to a program before source code has been loaded
