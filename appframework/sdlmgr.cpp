@@ -14,6 +14,7 @@
 
 #include "togl/rendermechanism.h"
 
+#include "tier0/fasttimer.h"
 #include "tier0/vprof_telemetry.h"
 #include "tier0/icommandline.h"
 
@@ -52,6 +53,56 @@ ConVar gl_finish( "gl_finish", "0" );
 
 ConVar sdl_double_click_size( "sdl_double_click_size", "2" );
 ConVar sdl_double_click_time( "sdl_double_click_time", "400" );
+
+#define SDL_PUMP_PERF_ANALYSIS 0
+
+#if SDL_PUMP_PERF_ANALYSIS
+struct CSDLPumpPerfStats
+{
+	CCycleCount m_PumpTime;
+	uint64 m_nPumps;
+	uint64 m_nEvents;
+	uint64 m_nMouseMotionEvents;
+	uint64 m_nControllerEvents;
+	uint64 m_nWindowEvents;
+	uint64 m_nMaxEventPumps;
+
+	void Reset()
+	{
+		m_PumpTime.Init();
+		m_nPumps = 0;
+		m_nEvents = 0;
+		m_nMouseMotionEvents = 0;
+		m_nControllerEvents = 0;
+		m_nWindowEvents = 0;
+		m_nMaxEventPumps = 0;
+	}
+};
+
+static CSDLPumpPerfStats s_SDLPumpPerfStats;
+
+CON_COMMAND( sdl_dump_pump_stats, "Print SDL event-pump timing and event counts; pass 1 to reset after printing." )
+{
+	const double flPumps = (double)s_SDLPumpPerfStats.m_nPumps;
+	const double flPumpMS = s_SDLPumpPerfStats.m_PumpTime.GetMillisecondsF();
+
+	ConMsg( "SDL pump: Calls: %llu Total: %4.3fms (%4.3fms/call) Events: %llu (%4.2f/call) MouseMotion: %llu Controller: %llu Window: %llu Hit100Limit: %llu\n",
+		(unsigned long long)s_SDLPumpPerfStats.m_nPumps,
+		flPumpMS,
+		flPumps ? flPumpMS / flPumps : 0.0,
+		(unsigned long long)s_SDLPumpPerfStats.m_nEvents,
+		flPumps ? (double)s_SDLPumpPerfStats.m_nEvents / flPumps : 0.0,
+		(unsigned long long)s_SDLPumpPerfStats.m_nMouseMotionEvents,
+		(unsigned long long)s_SDLPumpPerfStats.m_nControllerEvents,
+		(unsigned long long)s_SDLPumpPerfStats.m_nWindowEvents,
+		(unsigned long long)s_SDLPumpPerfStats.m_nMaxEventPumps );
+
+	if ( args.ArgC() == 2 && args.Arg(1)[0] != '0' )
+	{
+		s_SDLPumpPerfStats.Reset();
+	}
+}
+#endif
 
 #if defined( DX_TO_GL_ABSTRACTION )
 COpenGLEntryPoints *gGL = NULL;
@@ -1768,11 +1819,37 @@ void CSDLMgr::PumpWindowsMessageLoop()
 {
 	SDLAPP_FUNC;
 
+#if SDL_PUMP_PERF_ANALYSIS
+	CFastTimer pumpTimer;
+	pumpTimer.Start();
+#endif
+
 	SDL_Event event;
 	int nEventsProcessed = 0;
 	while ( SDL_PollEvent(&event) && nEventsProcessed < 100 )
 	{
 		nEventsProcessed++;
+
+#if SDL_PUMP_PERF_ANALYSIS
+		++s_SDLPumpPerfStats.m_nEvents;
+		if ( event.type == SDL_MOUSEMOTION )
+		{
+			++s_SDLPumpPerfStats.m_nMouseMotionEvents;
+		}
+		else if ( event.type == SDL_CONTROLLERAXISMOTION ||
+			event.type == SDL_CONTROLLERBUTTONDOWN ||
+			event.type == SDL_CONTROLLERBUTTONUP ||
+			event.type == SDL_CONTROLLERDEVICEADDED ||
+			event.type == SDL_CONTROLLERDEVICEREMOVED ||
+			event.type == SDL_CONTROLLERDEVICEREMAPPED )
+		{
+			++s_SDLPumpPerfStats.m_nControllerEvents;
+		}
+		else if ( event.type == SDL_WINDOWEVENT )
+		{
+			++s_SDLPumpPerfStats.m_nWindowEvents;
+		}
+#endif
 
 		switch ( event.type )
 		{
@@ -2014,6 +2091,16 @@ void CSDLMgr::PumpWindowsMessageLoop()
 				break;
 		}
 	}
+
+#if SDL_PUMP_PERF_ANALYSIS
+	pumpTimer.End();
+	s_SDLPumpPerfStats.m_PumpTime += pumpTimer.GetDuration();
+	++s_SDLPumpPerfStats.m_nPumps;
+	if ( nEventsProcessed == 100 )
+	{
+		++s_SDLPumpPerfStats.m_nMaxEventPumps;
+	}
+#endif
 }
 
 void CSDLMgr::IncWindowRefCount()
