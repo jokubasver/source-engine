@@ -1082,7 +1082,7 @@ void CBasePanel::PaintBackground()
 		// not in the game or loading dialog active or exiting, draw the ui background
 		DrawBackgroundImage();
 	}
-	else if ( IsX360() )
+	else if ( IsX360() || IsSteamDeck() )
 	{
 		// only valid during loading from level to level
 		m_bUseRenderTargetImage = false;
@@ -1369,7 +1369,7 @@ void CBasePanel::OnLevelLoadingStarted()
 		m_hMatchmakingBasePanel->OnCommand( "LevelLoadingStarted" );
 	}
 
-	if ( IsX360() && m_eBackgroundState == BACKGROUND_LEVEL )
+	if ( ( IsX360() || IsSteamDeck() ) && m_eBackgroundState == BACKGROUND_LEVEL )
 	{
 		// already in a level going to another level
 		// frame buffer is about to be cleared, copy it off for ui backing purposes
@@ -1395,14 +1395,13 @@ void CBasePanel::OnLevelLoadingFinished()
 //-----------------------------------------------------------------------------
 void CBasePanel::DrawBackgroundImage()
 {
-	if ( IsX360() && m_bCopyFrameBuffer )
+	if ( ( IsX360() || IsSteamDeck() ) && m_bCopyFrameBuffer )
 	{
 		// force the engine to do an image capture ONCE into this image's render target
 		char filename[MAX_PATH];
 		surface()->DrawGetTextureFile( m_iRenderTargetImageID, filename, sizeof( filename ) );
-		engine->CopyFrameBufferToMaterial( filename );
+		m_bUseRenderTargetImage = engine->CopyFrameBufferToMaterial( filename );
 		m_bCopyFrameBuffer = false;
-		m_bUseRenderTargetImage = true;
 	}
 
 	int wide, tall;
@@ -1429,22 +1428,19 @@ void CBasePanel::DrawBackgroundImage()
 	}
 
 	int iImageID = m_iBackgroundImageID;
-	if ( IsX360() )
+	if ( IsX360() && m_ExitingFrameCount )
 	{
-		if ( m_ExitingFrameCount )
+		if ( !m_bRestartSameGame )
 		{
-			if ( !m_bRestartSameGame )
-			{
-				iImageID = m_iProductImageID;
-			}
+			iImageID = m_iProductImageID;
 		}
-		else if ( m_bUseRenderTargetImage )
-		{
-			// the render target image must be opaque, the alpha channel contents are unknown
-			// it is strictly an opaque background image and never used as an overlay
-			iImageID = m_iRenderTargetImageID;
-			alpha = 255;
-		}
+	}
+	else if ( ( IsX360() || IsSteamDeck() ) && !m_ExitingFrameCount && m_bUseRenderTargetImage )
+	{
+		// the render target image must be opaque, the alpha channel contents are unknown
+		// it is strictly an opaque background image and never used as an overlay
+		iImageID = m_iRenderTargetImageID;
+		alpha = 255;
 	}
 
 	surface()->DrawSetColor( 255, 255, 255, alpha );
@@ -1867,9 +1863,9 @@ void CBasePanel::ApplySchemeSettings(IScheme *pScheme)
 	m_BackdropColor = pScheme->GetColor("mainmenu.backdrop", Color(0, 0, 0, 128));
 
 	char filename[MAX_PATH];
-	if ( IsX360() )
+	if ( IsX360() || IsSteamDeck() )
 	{
-		// 360 uses FullFrameFB1 RT for map to map transitioning
+		// Console-style loading uses FullFrameFB1 RT for map-to-map transitioning.
 		if ( m_iRenderTargetImageID == -1 )
 		{
 			m_iRenderTargetImageID = surface()->CreateNewTextureID();

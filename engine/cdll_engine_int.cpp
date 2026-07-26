@@ -1421,9 +1421,9 @@ void CEngineClient::ChangeTeam( const char *pTeamName )
 //-----------------------------------------------------------------------------
 bool CEngineClient::CopyFrameBufferToMaterial( const char *pMaterialName )
 {
-	if ( !IsX360() )
+	if ( !IsX360() && !IsSteamDeck() )
 	{
-		// not for PC
+		// Only console-style loading transitions use this capture.
 		Assert( 0 );
 		return false;
 	}
