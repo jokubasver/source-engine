@@ -1123,10 +1123,6 @@ void CVideoMode_Common::DrawNullBackground( void *hHDC, int w, int h )
 
 #ifndef _WIN32
 
-typedef unsigned char BYTE;
-typedef signed long LONG;
-typedef unsigned long ULONG;
-
 typedef char * LPSTR;
 
 typedef struct tagBITMAPINFOHEADER{

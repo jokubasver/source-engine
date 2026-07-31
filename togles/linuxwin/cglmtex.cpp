@@ -1242,11 +1242,10 @@ void CGLMTex::CalcTexelDataOffsetAndStrides( int sliceIndex, int x, int y, int z
 		yStride = format->m_bytesPerBlock * ((m_layout->m_slices[sliceIndex].m_xSize + format->m_blockWidth - 1) / format->m_blockWidth);
 		zStride = yStride * ((m_layout->m_slices[sliceIndex].m_ySize + format->m_blockHeight - 1) / format->m_blockHeight);
 		
-		// compressed format.  scale the x,y,z values into chunks.
+		// compressed format.  scale the x,y values into chunks. Z isn't chunked.
 		// assert if any of them are not multiples of a chunk.
 		int chunkx = x / format->m_blockWidth;
 		int chunky = y / format->m_blockHeight;
-		int chunkz = z / format->m_blockDepth;
 		
 		if ( (chunkx * format->m_blockWidth) != x)
 		{
@@ -1258,14 +1257,9 @@ void CGLMTex::CalcTexelDataOffsetAndStrides( int sliceIndex, int x, int y, int z
 			GLMStop();
 		}
 		
-		if ( (chunkz * format->m_blockDepth) != z)
-		{
-			GLMStop();
-		}
-		
 		offset = chunkx * format->m_bytesPerBlock;	// lateral offset
 		offset += (chunky * yStride);						// chunk row offset
-		offset += (chunkz * zStride);						// should be zero for 2D tex		
+		offset += (z * zStride);						// should be zero for 2D tex		
 	}
 	
 	*offsetOut	= offset;

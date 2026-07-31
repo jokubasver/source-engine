@@ -147,7 +147,11 @@ typedef int BOOL;
 #endif
 
 typedef int qboolean;
+#if defined(_WIN32) || !defined(PLATFORM_64BITS)
 typedef unsigned long ULONG;
+#else
+typedef unsigned int ULONG;  // match Windows 32-bit ULONG on 64-bit Linux
+#endif
 typedef unsigned char BYTE;
 typedef unsigned char byte;
 typedef unsigned short word;

@@ -57,9 +57,6 @@
 #include "dxabstract_types.h"
 #include "tier0/icommandline.h"
 
-#undef FORCEINLINE
-#define FORCEINLINE inline
-
 //===============================================================================
 
 #define GLM_OPENGL_VENDOR_ID 1
@@ -1489,7 +1486,7 @@ class GLMContext
 #endif
 
 		FORCEINLINE void SetMaxUsedVertexShaderConstantsHint( uint nMaxConstants );
-		FORCEINLINE uintp GetCurrentOwnerThreadId() const { return m_nCurOwnerThreadId; }
+		FORCEINLINE ThreadId_t GetCurrentOwnerThreadId() const { return m_nCurOwnerThreadId; }
 								
 	protected:
 		friend class GLMgr;				// only GLMgr can make GLMContext objects
@@ -1609,7 +1606,7 @@ class GLMContext
 		// members------------------------------------------
 						
 		// context
-		uintp							m_nCurOwnerThreadId;
+		ThreadId_t						m_nCurOwnerThreadId;
 		uint							m_nThreadOwnershipReleaseCounter;
 
 		bool							m_bUseSamplerObjects;
