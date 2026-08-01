@@ -256,6 +256,10 @@ GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
 
+// GPU frame timing (gl_gpu_timing). Uses the core glBeginQuery/glEndQuery/
+// glGetQueryObjectuiv entry points with the GL_TIME_ELAPSED_EXT target.
+GL_EXT( GL_EXT_disjoint_timer_query, -1, -1 )
+
 // Anisotropic filtering. Optional on GLES2 (and absent on many mobile GPUs, e.g.
 // ARM Mali). When missing, the GL_TEXTURE_MAX_ANISOTROPY_EXT pname is invalid and
 // must not be passed to glTexParameteri/glSamplerParameteri (it raises GL_INVALID_ENUM).

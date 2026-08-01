@@ -5607,6 +5607,7 @@ HRESULT IDirect3DDevice9::DrawIndexedPrimitive( D3DPRIMITIVETYPE Type, INT BaseV
 	}
 
 	g_nTotalDrawsOrClears++;
+	m_ctx->m_nGpuFrameDraws++;
 
 #if GLM_WORKER_PERF_ANALYSIS
 	s_WorkerPerfStats.m_nPrimitives += primCount;
@@ -5908,6 +5909,7 @@ HRESULT IDirect3DDevice9::DrawIndexedPrimitive( D3DPRIMITIVETYPE Type,INT BaseVe
 	}
 
 	g_nTotalDrawsOrClears++;
+	m_ctx->m_nGpuFrameDraws++;
 
 #if GL_BATCH_PERF_ANALYSIS
 	m_nTotalPrims += primCount;
@@ -6009,6 +6011,7 @@ HRESULT IDirect3DDevice9::Clear(DWORD Count,CONST D3DRECT* pRects,DWORD Flags,D3
 	}
 		
 	g_nTotalDrawsOrClears++;
+	m_ctx->m_nGpuFrameDraws++;
 
 	m_ctx->FlushDrawStatesNoShaders();
 

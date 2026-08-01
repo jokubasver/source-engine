@@ -1411,6 +1411,9 @@ class GLMContext
 		// Queries
 		CGLMQuery *NewQuery( GLMQueryParams *params );
 		void DelQuery( CGLMQuery *query );
+
+		// GPU frame timing (gl_gpu_timing convar)
+		void UpdateGpuTimingReport();
 			
 		// "slot" means a vec4-sized thing
 		// these write into .env parameter space
@@ -1848,6 +1851,30 @@ class GLMContext
 
 		uint m_nCurFrame;
 		uint m_nBatchCounter;
+
+		// GPU frame timing (gl_gpu_timing). Uses GL_EXT_disjoint_timer_query
+		// (GL_TIME_ELAPSED_EXT) to report command-stream CPU time vs GPU time
+		// per frame. Ping-pong query objects so result reads never stall.
+		GLuint							m_gpuTimerQuery[2];		// ping-pong query objects
+		int								m_nGpuTimerIndex;		// slot currently being recorded into
+		bool							m_bGpuTimerAvailable;	// driver exposes GL_EXT_disjoint_timer_query
+		bool							m_bGpuTimerArmed;		// a timer query is open for the current frame
+		bool							m_bGpuTimerHasRecorded;	// at least one frame has been recorded
+		uint64							m_nGpuTimeNanos;		// last completed GPU frame time (ns)
+		float							m_flGpuFrameStart;		// Plat_FloatTime at BeginFrame
+		float							m_flGpuLastCpuMs;		// last frame command-stream CPU time
+		float							m_flGpuReportStart;		// Plat_FloatTime at last report
+		int								m_nGpuReportFrames;		// frames since last report
+		float							m_flGpuAccumMs;			// GPU ms accumulated since last report
+		float							m_flCpuAccumMs;			// CPU ms accumulated since last report
+		float							m_flCpuPreSwapAccumMs;	// CPU ms excl. swap, accumulated since last report
+		float							m_flGpuFrameEndPreSwap;	// Plat_FloatTime right before the swap in Present
+		int								m_nGpuFrameDraws;		// draw calls + clears this frame
+		int								m_nGpuFrameProgramChanges;	// glUseProgram calls this frame
+		int								m_nGpuFrameUniformCalls;	// uniform upload GL calls this frame
+		int								m_nGpuFrameUniformsSet;		// float4 constants uploaded this frame
+		int								m_nGpuFrameResolves;		// MSAA resolves this frame
+		int								m_nGpuFrameBlits;			// blit operations this frame
 
 		struct TextureEntry_t
 		{

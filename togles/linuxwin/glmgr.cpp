@@ -919,6 +919,8 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	CScopedGLMPIXEvent glmPIXEvent( "Blit2" );
 	g_TelemetryGPUStats.m_nTotalBlit2++;
 #endif
+
+	m_nGpuFrameBlits++;
 	
 	SaveColorMaskAndSetToDefault();
 	
@@ -1489,6 +1491,8 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 	// only run resolve if it's (a) possible and (b) dirty or force-dirtied
 	if ( ( tex->m_rboName ) && ( tex->IsRBODirty() || forceDirty ) )
 	{
+		m_nGpuFrameResolves++;
+
 		// state we need to save
 		//	current setting of scissor
 		//	current setting of the drawing fbo (no explicit save, it's in the context)
@@ -2158,6 +2162,10 @@ static	ConVar gl_flushpaircache ("gl_flushpaircache", "0");
 static	ConVar gl_paircachestats ("gl_paircachestats", "0");
 static	ConVar gl_mtglflush_at_tof ("gl_mtglflush_at_tof", "0");
 static	ConVar gl_texlayoutstats ("gl_texlayoutstats", "0" );
+// 0 = off, 1 = report once per second, 2 = report every frame.
+// Prints the command-stream thread's CPU time for the frame vs the GPU's
+// GL_TIME_ELAPSED time (previous frame's GPU time, read without stalling).
+static	ConVar gl_gpu_timing ("gl_gpu_timing", "0");
 
 static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
 {
@@ -2171,6 +2179,19 @@ void GLMContext::BeginFrame( void )
 {
 	GLM_FUNC;
 	VPROF_BUDGET( "ToGL_BeginFrame", "ToGL_BeginFrame" );
+
+	// Start the GPU frame timer. It spans all GL work submitted between
+	// BeginFrame and Present, so it measures the whole frame on the GPU.
+	if ( gl_gpu_timing.GetInt() && m_bGpuTimerAvailable )
+	{
+		if ( m_gpuTimerQuery[0] == 0 )
+		{
+			gGL->glGenQueries( 2, m_gpuTimerQuery );
+		}
+		m_flGpuFrameStart = Plat_FloatTime();
+		gGL->glBeginQuery( GL_TIME_ELAPSED_EXT, m_gpuTimerQuery[m_nGpuTimerIndex] );
+		m_bGpuTimerArmed = true;
+	}
 
 	m_debugFrameIndex++;
 	
@@ -2452,6 +2473,7 @@ void GLMContext::Present( CGLMTex *tex )
 
 		{
 			VPROF_BUDGET( "ToGL_Present_Swap", "ToGL_Present_Swap" );
+			m_flGpuFrameEndPreSwap = Plat_FloatTime();
 			ShowPixels(&showparams);
 		}
 		}
@@ -2468,10 +2490,83 @@ void GLMContext::Present( CGLMTex *tex )
 
 	m_nCurFrame++;
 
+	// End the GPU frame timer, then read the previous frame's result so the
+	// read never blocks the pipeline. Report CPU vs GPU time per gl_gpu_timing.
+	if ( m_bGpuTimerArmed )
+	{
+		m_bGpuTimerArmed = false;
+		gGL->glEndQuery( GL_TIME_ELAPSED_EXT );
+
+		if ( m_bGpuTimerHasRecorded )
+		{
+			const int nReadIndex = m_nGpuTimerIndex ^ 1;
+			GLuint nAvailable = 0;
+			gGL->glGetQueryObjectuiv( m_gpuTimerQuery[nReadIndex], GL_QUERY_RESULT_AVAILABLE, &nAvailable );
+			if ( nAvailable )
+			{
+				GLuint nResult = 0;
+				gGL->glGetQueryObjectuiv( m_gpuTimerQuery[nReadIndex], GL_QUERY_RESULT, &nResult );
+				m_nGpuTimeNanos = nResult;
+			}
+		}
+		else
+		{
+			m_bGpuTimerHasRecorded = true;
+		}
+
+		m_nGpuTimerIndex ^= 1;
+
+		UpdateGpuTimingReport();
+	}
+
 #if GL_BATCH_PERF_ANALYSIS
 	tmMessage( TELEMETRY_LEVEL2, TMMF_ICON_EXCLAMATION, "VS Uniform Calls: %u, VS Uniforms: %u|VS Uniform Bone Calls: %u, VS Bone Uniforms: %u|PS Uniform Calls: %u, PS Uniforms: %u", m_nTotalVSUniformCalls, m_nTotalVSUniformsSet, m_nTotalVSUniformBoneCalls, m_nTotalVSUniformsBoneSet, m_nTotalPSUniformCalls, m_nTotalPSUniformsSet );
 	m_nTotalVSUniformCalls = 0, m_nTotalVSUniformBoneCalls = 0, m_nTotalVSUniformsSet = 0, m_nTotalVSUniformsBoneSet = 0, m_nTotalPSUniformCalls = 0, m_nTotalPSUniformsSet = 0;
 #endif
+}
+
+void GLMContext::UpdateGpuTimingReport()
+{
+	// CPU = wall time the command-stream thread spent on this frame (includes
+	// any wait on the swap chain if the GPU is behind). GPU = GL_TIME_ELAPSED
+	// for the previous frame, from the ping-pong query we just read.
+	const float flNow = Plat_FloatTime();
+	const float flCpuMs = ( flNow - m_flGpuFrameStart ) * 1000.0f;
+	const float flCpuPreSwapMs = ( m_flGpuFrameEndPreSwap - m_flGpuFrameStart ) * 1000.0f;
+	const float flGpuMs = (float)( m_nGpuTimeNanos / 1000000.0 );
+
+	m_flGpuLastCpuMs = flCpuMs;
+	m_flGpuAccumMs += flGpuMs;
+	m_flCpuAccumMs += flCpuMs;
+	m_flCpuPreSwapAccumMs += flCpuPreSwapMs;
+	m_nGpuReportFrames++;
+
+	const bool bEveryFrame = ( gl_gpu_timing.GetInt() >= 2 );
+	if ( bEveryFrame || ( flNow - m_flGpuReportStart ) >= 1.0f )
+	{
+		const int nFrames = MAX( m_nGpuReportFrames, 1 );
+		Msg( "GPU timing: %d frames | CPU %4.2f ms | CPU(preswap) %4.2f ms | swap %4.2f ms | GPU %4.2f ms | draws %d | prog %d | uni %d (%d v4) | resolve %d | blit %d | last: CPU %4.2f ms, GPU %4.2f ms\n",
+			m_nGpuReportFrames,
+			m_flCpuAccumMs / nFrames,
+			m_flCpuPreSwapAccumMs / nFrames,
+			( m_flCpuAccumMs - m_flCpuPreSwapAccumMs ) / nFrames,
+			m_flGpuAccumMs / nFrames,
+			m_nGpuFrameDraws, m_nGpuFrameProgramChanges,
+			m_nGpuFrameUniformCalls, m_nGpuFrameUniformsSet,
+			m_nGpuFrameResolves, m_nGpuFrameBlits,
+			flCpuMs, flGpuMs );
+		m_nGpuReportFrames = 0;
+		m_flGpuAccumMs = 0.0f;
+		m_flCpuAccumMs = 0.0f;
+		m_flCpuPreSwapAccumMs = 0.0f;
+		m_flGpuReportStart = flNow;
+		m_nGpuFrameDraws = 0;
+		m_nGpuFrameProgramChanges = 0;
+		m_nGpuFrameUniformCalls = 0;
+		m_nGpuFrameUniformsSet = 0;
+		m_nGpuFrameResolves = 0;
+		m_nGpuFrameBlits = 0;
+	}
 }
 
 //===============================================================================
@@ -2549,6 +2644,27 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_pDevice = pDevice;
 	m_nCurFrame = 0;
 	m_nBatchCounter = 0;
+
+	m_gpuTimerQuery[0] = m_gpuTimerQuery[1] = 0;
+	m_nGpuTimerIndex = 0;
+	m_bGpuTimerAvailable = gGL->m_bHave_GL_EXT_disjoint_timer_query;
+	m_bGpuTimerArmed = false;
+	m_bGpuTimerHasRecorded = false;
+	m_nGpuTimeNanos = 0;
+	m_flGpuFrameStart = 0.0f;
+	m_flGpuLastCpuMs = 0.0f;
+	m_flGpuReportStart = 0.0f;
+	m_nGpuReportFrames = 0;
+	m_flGpuAccumMs = 0.0f;
+	m_flCpuAccumMs = 0.0f;
+	m_flCpuPreSwapAccumMs = 0.0f;
+	m_flGpuFrameEndPreSwap = 0.0f;
+	m_nGpuFrameDraws = 0;
+	m_nGpuFrameProgramChanges = 0;
+	m_nGpuFrameUniformCalls = 0;
+	m_nGpuFrameUniformsSet = 0;
+	m_nGpuFrameResolves = 0;
+	m_nGpuFrameBlits = 0;
 
 	ClearCurAttribs();
 
@@ -2952,6 +3068,12 @@ GLMContext::~GLMContext	()
 	// m_texLayoutTable can be scrubbed once we know that all the tex are freed
 
 	gGL->glDeleteBuffers( 1, &m_destroyPBO );
+
+	if ( m_gpuTimerQuery[0] )
+	{
+		gGL->glDeleteQueries( 2, m_gpuTimerQuery );
+		m_gpuTimerQuery[0] = m_gpuTimerQuery[1] = 0;
+	}
 
 	if ( m_nReadTexelsFBO )
 	{

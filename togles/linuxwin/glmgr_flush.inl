@@ -246,6 +246,8 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			gGL->glUseProgram( (GLuint)pNewPair->m_program );
 			
+			m_nGpuFrameProgramChanges++;
+
 			GL_BATCH_PERF( m_FlushStats.m_nTotalProgramPairChanges++; )
 
 			if ( !m_pBoundPair )
@@ -554,6 +556,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				{
 					gGL->glUniform4fv( m_pBoundPair->m_UniformBufferParams[kGLMVertexProgram][DXABSTRACT_VS_FIRST_BONE_SLOT], numSlots, &m_programParamsF[kGLMVertexProgram].m_values[(DXABSTRACT_VS_LAST_BONE_SLOT+1)][0] );
 
+					m_nGpuFrameUniformCalls++;
+					m_nGpuFrameUniformsSet += numSlots;
+
 					dirtySlotHighWater = DXABSTRACT_VS_FIRST_BONE_SLOT;
 
 					GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
@@ -569,6 +574,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				if( numSlots > 0 )
 				{
 					gGL->glUniform4fv( m_pBoundPair->m_UniformBufferParams[kGLMVertexProgram][firstDirtySlot], dirtySlotHighWater - firstDirtySlot, &m_programParamsF[kGLMVertexProgram].m_values[firstDirtySlot][0] );
+
+					m_nGpuFrameUniformCalls++;
+					m_nGpuFrameUniformsSet += dirtySlotHighWater - firstDirtySlot;
 
 					GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
 					GL_BATCH_PERF( m_nTotalVSUniformsSet += dirtySlotHighWater - firstDirtySlot; )
@@ -620,6 +628,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 				gGL->glUniform4fv( vconstBoneLoc, nNumBoneRegs, &m_programParamsF[kGLMVertexProgram].m_values[DXABSTRACT_VS_FIRST_BONE_SLOT][0] );
 
+				m_nGpuFrameUniformCalls++;
+				m_nGpuFrameUniformsSet += nNumBoneRegs;
+
 				GL_BATCH_PERF( m_nTotalVSUniformBoneCalls++; )
 				GL_BATCH_PERF( m_nTotalVSUniformsBoneSet += nNumBoneRegs; )
 				GL_BATCH_PERF( m_FlushStats.m_nNumVSBoneConstants += nNumBoneRegs; )
@@ -649,6 +660,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 				tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "VSNonBoneUniformUpdate %u %u", firstDirtySlot, dirtySlotHighWater );
 	#endif
 				gGL->glUniform4fv( m_pBoundPair->m_UniformBufferParams[kGLMVertexProgram][firstDirtySlot], dirtySlotHighWater - firstDirtySlot, &m_programParamsF[kGLMVertexProgram].m_values[firstDirtySlot][0] );
+
+				m_nGpuFrameUniformCalls++;
+				m_nGpuFrameUniformsSet += dirtySlotHighWater - firstDirtySlot;
 
 				GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
 				GL_BATCH_PERF( m_nTotalVSUniformsSet += dirtySlotHighWater - firstDirtySlot; )
@@ -847,6 +861,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 #endif
 
 				gGL->glUniform4fv( m_pBoundPair->m_UniformBufferParams[kGLMFragmentProgram][firstDirtySlot], dirtySlotHighWater - firstDirtySlot, &m_programParamsF[kGLMFragmentProgram].m_values[firstDirtySlot][0] );
+
+				m_nGpuFrameUniformCalls++;
+				m_nGpuFrameUniformsSet += dirtySlotHighWater - firstDirtySlot;
 
 				GL_BATCH_PERF( m_nTotalPSUniformCalls++; )
 				GL_BATCH_PERF( m_nTotalPSUniformsSet += dirtySlotHighWater - firstDirtySlot; )

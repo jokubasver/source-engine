@@ -942,7 +942,37 @@ bool CGLMShaderPair::ValidateProgramPair()
 // automatically.  If glProgramBinary ever fails (corrupt/stale binary), we fall
 // back to the normal source attach+link path, so this is always safe.
 // -----------------------------------------------------------------------------
-static ConVar gl_program_binary_cache( "gl_program_binary_cache", "1", FCVAR_NONE, "Cache compiled GL program binaries to disk to skip relinking on startup" );
+// gl_program_binary_cache: 0 = off, 1 = on, 2 = on + verbose per-pair logging.
+// On warm starts every pair hit skips shader source attach+compile+link, which
+// is the dominant cost on Mali's slow compiler.
+static ConVar gl_program_binary_cache( "gl_program_binary_cache", "1", FCVAR_NONE, "Cache compiled GL program binaries to disk to skip relinking on startup (0=off, 1=on, 2=on+verbose)" );
+
+static int s_nProgramBinaryHits = 0;
+static int s_nProgramBinaryMisses = 0;
+static int s_nProgramBinarySaves = 0;
+
+static void ReportProgramBinaryCacheStats( const char *pszPairName, bool bHit, uint nMicros )
+{
+	if ( bHit )
+		++s_nProgramBinaryHits;
+	else
+		++s_nProgramBinaryMisses;
+
+	const int nTotal = s_nProgramBinaryHits + s_nProgramBinaryMisses;
+	if ( gl_program_binary_cache.GetInt() >= 2 )
+	{
+		Msg( "[glshadercache] %s %s in %u us (hits=%d misses=%d)\n",
+			pszPairName ? pszPairName : "?",
+			bHit ? "HIT" : "MISS", nMicros,
+			s_nProgramBinaryHits, s_nProgramBinaryMisses );
+	}
+	if ( ( nTotal % 256 ) == 0 )
+	{
+		Msg( "[glshadercache] cumulative: %d hits, %d misses, %d saves (hit rate %.1f%%)\n",
+			s_nProgramBinaryHits, s_nProgramBinaryMisses, s_nProgramBinarySaves,
+			s_nProgramBinaryHits * 100.0 / nTotal );
+	}
+}
 
 #define GL_PROGRAM_BINARY_CACHE_DIR "glshadercache"
 
@@ -1163,7 +1193,14 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 		{
 			MD5Value_t pairHash;
 			ComputeShaderPairHash( vp, fp, pairHash );
-			if ( LoadCachedProgramBinary( m_program, pairHash ) )
+
+			CFastTimer binaryCacheTimer;
+			binaryCacheTimer.Start();
+			const bool bLoaded = LoadCachedProgramBinary( m_program, pairHash );
+			binaryCacheTimer.End();
+			ReportProgramBinaryCacheStats( vp->m_shaderName, bLoaded, binaryCacheTimer.GetDuration().GetMicroseconds() );
+
+			if ( bLoaded )
 			{
 				bUsedBinaryCache = true;
 				m_bCheckLinkStatus = true;	// ValidateProgramPair will confirm m_valid + query uniforms
@@ -1223,6 +1260,7 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 					MD5Value_t pairHash;
 					ComputeShaderPairHash( vp, fp, pairHash );
 					SaveCachedProgramBinary( m_program, pairHash );
+					++s_nProgramBinarySaves;
 				}
 			}
 			
