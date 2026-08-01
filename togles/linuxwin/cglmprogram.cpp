@@ -849,33 +849,12 @@ bool CGLMShaderPair::ValidateProgramPair()
 
 			m_locFragmentParams = gGL->glGetUniformLocation( m_program, "pc" );
 
-			for (uint i = 0; i < kGLMNumProgramTypes; i++)
-			{
-				m_NumUniformBufferParams[i] = 0;
-
-				if (i == kGLMVertexProgram)
-				{
-					if (m_locVertexParams < 0)
-						continue;
-				}
-				else if (m_locFragmentParams < 0)
-					continue;
-
-				const uint nNum = (i == kGLMVertexProgram) ? m_vertexProg->m_descs[kGLMGLSL].m_highWater : m_fragmentProg->m_descs[kGLMGLSL].m_highWater;
-
-				uint j;
-				for (j = 0; j < nNum; j++)
-				{
-					char buf[256];
-					V_snprintf( buf, sizeof(buf), "%cc[%i]", "vp"[i], j );
-					// Grab the handle of each array element, so we can more efficiently update array elements in the middle.
-					int l = m_UniformBufferParams[i][j] = gGL->glGetUniformLocation( m_program, buf );
-					if (l < 0)
-						break;
-				}
-
-				m_NumUniformBufferParams[i] = j;
-			}
+			// No per-element location queries: for a uniform array the elements
+			// occupy contiguous locations (GL spec), so the flush addresses
+			// vc[i]/pc[i] as m_locVertexParams/m_locFragmentParams + i. This
+			// removes ~256 glGetUniformLocation driver round-trips per program,
+			// which dominated the startup precache (267 pairs x ~500 calls).
+			m_NumUniformBufferParams[0] = m_NumUniformBufferParams[1] = 0;
 
 			m_locFragmentFakeSRGBEnable = gGL->glGetUniformLocation( m_program, "flSRGBWrite" );
 			m_fakeSRGBEnableValue = -1.0f;
