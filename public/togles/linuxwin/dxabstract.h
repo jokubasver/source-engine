@@ -746,50 +746,52 @@ FORCEINLINE HRESULT TOGLMETHODCALLTYPE IDirect3DDevice9::SetSamplerState( DWORD 
 	Assert( GetCurrentOwnerThreadId() == ThreadGetCurrentId() );
 	Assert( Sampler < GLM_SAMPLER_COUNT );
 	
-	m_ctx->SetSamplerDirty( Sampler );
+	bool bChanged = false;
 
 	switch( Type )
 	{
 		case D3DSAMP_ADDRESSU:
-			m_ctx->SetSamplerAddressU( Sampler, Value );
+			bChanged = m_ctx->SetSamplerAddressU( Sampler, Value );
 			break;
 		case D3DSAMP_ADDRESSV:
-			m_ctx->SetSamplerAddressV( Sampler, Value );
+			bChanged = m_ctx->SetSamplerAddressV( Sampler, Value );
 			break;
 		case D3DSAMP_ADDRESSW:
-			m_ctx->SetSamplerAddressW( Sampler, Value );
+			bChanged = m_ctx->SetSamplerAddressW( Sampler, Value );
 			break;
 		case D3DSAMP_BORDERCOLOR:
-			m_ctx->SetSamplerBorderColor( Sampler, Value );
+			bChanged = m_ctx->SetSamplerBorderColor( Sampler, Value );
 			break;
 		case D3DSAMP_MAGFILTER:
-			m_ctx->SetSamplerMagFilter( Sampler, Value );
+			bChanged = m_ctx->SetSamplerMagFilter( Sampler, Value );
 			break;
 		case D3DSAMP_MIPFILTER:	
-			m_ctx->SetSamplerMipFilter( Sampler, Value );
+			bChanged = m_ctx->SetSamplerMipFilter( Sampler, Value );
 			break;
 		case D3DSAMP_MINFILTER:	
-			m_ctx->SetSamplerMinFilter( Sampler, Value );
+			bChanged = m_ctx->SetSamplerMinFilter( Sampler, Value );
 			break;
 		case D3DSAMP_MIPMAPLODBIAS: 
-			m_ctx->SetSamplerMipMapLODBias( Sampler, Value );
+			bChanged = m_ctx->SetSamplerMipMapLODBias( Sampler, Value );
 			break;		
 		case D3DSAMP_MAXMIPLEVEL: 
-			m_ctx->SetSamplerMaxMipLevel( Sampler, Value);
+			bChanged = m_ctx->SetSamplerMaxMipLevel( Sampler, Value);
 			break;
 		case D3DSAMP_MAXANISOTROPY: 
-			m_ctx->SetSamplerMaxAnisotropy( Sampler, Value);
+			bChanged = m_ctx->SetSamplerMaxAnisotropy( Sampler, Value);
 			break;
 		case D3DSAMP_SRGBTEXTURE: 
 			//m_samplers[ Sampler ].m_srgb = Value;
-			m_ctx->SetSamplerSRGBTexture(Sampler, Value);
+			bChanged = m_ctx->SetSamplerSRGBTexture(Sampler, Value);
 			break;
 		case D3DSAMP_SHADOWFILTER: 
-			m_ctx->SetShadowFilter(Sampler, Value);
+			bChanged = m_ctx->SetShadowFilter(Sampler, Value);
 			break;
 		
 		default: DXABSTRACT_BREAK_ON_ERROR(); break;
 	}
+	if ( bChanged )
+		m_ctx->SetSamplerDirty( Sampler );
 	return S_OK;
 #endif
 }
@@ -804,10 +806,9 @@ FORCEINLINE void TOGLMETHODCALLTYPE IDirect3DDevice9::SetSamplerStates(
 #else
 	Assert( GetCurrentOwnerThreadId() == ThreadGetCurrentId() );
 	Assert( Sampler < GLM_SAMPLER_COUNT);
-		
-	m_ctx->SetSamplerDirty( Sampler );
-		
-	m_ctx->SetSamplerStates( Sampler, AddressU, AddressV, AddressW, MinFilter, MagFilter, MipFilter, MinLod, LodBias );
+
+	if ( m_ctx->SetSamplerStates( Sampler, AddressU, AddressV, AddressW, MinFilter, MagFilter, MipFilter, MinLod, LodBias ) )
+		m_ctx->SetSamplerDirty( Sampler );
 #endif
 }
 

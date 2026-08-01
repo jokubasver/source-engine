@@ -619,6 +619,8 @@ void GLMContext::ForceFlushStates()
 	m_ColorMaskMultiple.Flush();
 	m_BlendEquation.Flush();
 	m_BlendColor.Flush();
+	m_bDirtyRenderStates = false;
+
 	// Reset various things so they get reset on the next batch flush
 	m_activeTexture = -1;
 
@@ -903,12 +905,12 @@ void GLMContext::SaveColorMaskAndSetToDefault()
 
 	GLColorMaskSingle_t newColorMask;
 	newColorMask.r = newColorMask.g = newColorMask.b = newColorMask.a = -1;
-	m_ColorMaskSingle.Write( &newColorMask );
+	m_ColorMaskSingle.WriteAndFlush( &newColorMask );
 }
 
 void GLMContext::RestoreSavedColorMask()
 {
-	m_ColorMaskSingle.Write( &m_SavedColorMask );
+	m_ColorMaskSingle.WriteAndFlush( &m_SavedColorMask );
 }
 
 void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter )
@@ -1037,7 +1039,7 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	{
 		//	turn off scissor
 		newsciss.enable = false;
-		m_ScissorEnable.Write( &newsciss );
+		m_ScissorEnable.WriteAndFlush( &newsciss );
 	}
 
 	//----------------------------------------------------------------- fork in the road, depending on two-step or not
@@ -1210,7 +1212,7 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 	//----------------------------------------------------------------- restore old scissor state
 	if (oldsciss.enable)
 	{
-		m_ScissorEnable.Write( &oldsciss );
+		m_ScissorEnable.WriteAndFlush( &oldsciss );
 	}
 
 	RestoreSavedColorMask();
@@ -1271,7 +1273,7 @@ void GLMContext::BlitTex( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int sr
 		// setup
 		//	turn off scissor
 		newsciss.enable = false;
-		m_ScissorEnable.Write( &newsciss );
+		m_ScissorEnable.WriteAndFlush( &newsciss );
 
 		// select which attachment enum we're going to use for the blit
 		// default to color0, unless it's a depth or stencil flava
@@ -1354,7 +1356,7 @@ void GLMContext::BlitTex( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int sr
 			//	set the read and write buffers back to... what ? does it matter for anything but copies ?  don't worry about it
 		
 		// restore the scissor state
-		m_ScissorEnable.Write( &oldsciss );
+		m_ScissorEnable.WriteAndFlush( &oldsciss );
 	}
 	else
 	{
@@ -1498,7 +1500,7 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 		// setup
 		//	turn off scissor
 		newsciss.enable = false;
-		m_ScissorEnable.Write( &newsciss );
+		m_ScissorEnable.WriteAndFlush( &newsciss );
 
 		// select which attachment enum we're going to use for the blit
 		// default to color0, unless it's a depth or stencil flava
@@ -1667,7 +1669,7 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 		//	set the read and write buffers back to... what ? does it matter for anything but copies ?  don't worry about it
 		
 		// restore the scissor state
-		m_ScissorEnable.Write( &oldsciss );
+		m_ScissorEnable.WriteAndFlush( &oldsciss );
 		
 		// mark the RBO clean on the resolved tex
 		tex->ForceRBONonDirty();
@@ -2014,31 +2016,31 @@ void GLMContext::Clear( bool color, unsigned long colorValue, bool depth, float 
 			clearcol.b =	((colorValue      ) & 0xFF) / 255.0f;	//B
 			clearcol.a =	((colorValue >> 24) & 0xFF) / 255.0f;	//A
 
-			m_ClearColor.Write( &clearcol );	// no check, no wait
+			m_ClearColor.WriteAndFlush( &clearcol );
 			mask |= GL_COLOR_BUFFER_BIT;
 			
 			// save and set color mask
 			m_ColorMaskSingle.Read( &oldcolormask, 0 );			
-			m_ColorMaskSingle.Write( &newcolormask );			
+			m_ColorMaskSingle.WriteAndFlush( &newcolormask );
 		}
 
 		if (depth)
 		{
 			// get old depth write mask
 			m_DepthMask.Read( &olddepthmask, 0 );
-			m_DepthMask.Write( &newdepthmask );
-			m_ClearDepth.Write( &cleardep );	// no check, no wait
+			m_DepthMask.WriteAndFlush( &newdepthmask );
+			m_ClearDepth.WriteAndFlush( &cleardep );
 			mask |= GL_DEPTH_BUFFER_BIT;
 		}
 
 		if (stencil)
 		{
-			m_ClearStencil.Write( &clearsten );	// no check, no wait
+			m_ClearStencil.WriteAndFlush( &clearsten );
 			mask |= GL_STENCIL_BUFFER_BIT;
 
 			// save and set sten mask
 			m_StencilWriteMask.Read( &oldstenmask, 0 );			
-			m_StencilWriteMask.Write( &newstenmask );			
+			m_StencilWriteMask.WriteAndFlush( &newstenmask );
 		}
 
 		bool subrect = (box != NULL);
@@ -2074,8 +2076,8 @@ void GLMContext::Clear( bool color, unsigned long colorValue, bool depth, float 
 				scissorBoxNew = *box;
 			}
 			// set new box and enable
-			m_ScissorEnable.Write( &scissorEnableNew );
-			m_ScissorBox.Write( &scissorBoxNew );
+			m_ScissorEnable.WriteAndFlush( &scissorEnableNew );
+			m_ScissorBox.WriteAndFlush( &scissorBoxNew );
 		}
 
 		// GL_EXT_discard_framebuffer: before clearing, discard buffers we're
@@ -2103,26 +2105,26 @@ void GLMContext::Clear( bool color, unsigned long colorValue, bool depth, float 
 		if (subrect)
 		{
 			// put old scissor box and enable back
-			m_ScissorEnable.Write( &scissorEnableSave );
-			m_ScissorBox.Write( &scissorBoxSave );
+			m_ScissorEnable.WriteAndFlush( &scissorEnableSave );
+			m_ScissorBox.WriteAndFlush( &scissorBoxSave );
 		}
 		
 		if (depth)
 		{
 			// put old depth write mask
-			m_DepthMask.Write( &olddepthmask );
+			m_DepthMask.WriteAndFlush( &olddepthmask );
 		}
 		
 		if (color)
 		{
 			// put old color write mask
-			m_ColorMaskSingle.Write( &oldcolormask );			
+			m_ColorMaskSingle.WriteAndFlush( &oldcolormask );
 		}
 		
 		if (stencil)
 		{
 			// put old sten mask
-			m_StencilWriteMask.Write( &oldstenmask );			
+			m_StencilWriteMask.WriteAndFlush( &oldstenmask );
 		}
 
 #if GLMDEBUG
@@ -2505,6 +2507,7 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 {
 	m_nNumDirtySamplers = 0;
 	m_nClipPlaneStateRevision = 0;
+	m_bDirtyRenderStates = false;
 
 	if( gGL->m_nDriverProvider == cGLDriverProviderARM )
 		m_bUseSamplerObjects = true;
@@ -3279,7 +3282,10 @@ void GLMContext::FlushDrawStatesNoShaders( )
 	GLM_FUNC;
 
 	GL_BATCH_PERF( m_FlushStats.m_nTotalBatchFlushes++; )
-			
+
+	// Clears consume scissor, write-mask, and clear-value state even though no
+	// shaders are bound, so commit the same deferred state block here.
+	FlushRenderStates();
 	NullProgram();
 }
 
@@ -4592,7 +4598,7 @@ void GLMContext::DebugClear( void )
 	clearcol.g = m_autoClearColorValues[1];
 	clearcol.b = m_autoClearColorValues[2];
 	clearcol.a = m_autoClearColorValues[3];
-	m_ClearColor.Write( &clearcol ); // don't check, don't defer
+	m_ClearColor.WriteAndFlush( &clearcol );
 	
 	uint mask = 0;
 	
@@ -4604,7 +4610,7 @@ void GLMContext::DebugClear( void )
 	gGL->glFinish();
 
 	// put old color back
-	m_ClearColor.Write( &clearcol_orig ); // don't check, don't defer
+	m_ClearColor.WriteAndFlush( &clearcol_orig );
 }
 
 #endif
@@ -5036,7 +5042,8 @@ void GLMContext::SetDefaultStates( void )
 
 	m_ClearColor.Default();
 	m_ClearDepth.Default();
-	m_ClearStencil.Default();	
+	m_ClearStencil.Default();
+	m_bDirtyRenderStates = false;
 }
 
 void GLMContext::VerifyStates		( void )

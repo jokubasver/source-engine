@@ -89,6 +89,10 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	Assert( ( m_drawingFBO == m_boundDrawFBO ) && ( m_drawingFBO == m_boundReadFBO ) ); // this check MUST succeed
 	Assert( m_pDevice->m_pVertDecl );
 
+	// D3D state setters only update the desired state. Commit the final delta
+	// once, immediately before the draw, like DXVK's PrepareDraw path.
+	FlushRenderStates();
+
 #if GLMDEBUG
 	GLM_FUNC;
 #endif
@@ -404,14 +408,34 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		m_pBoundPair->m_nClipPlaneStateRevision = m_nClipPlaneStateRevision;
 	}
 	
-	GL_BATCH_PERF( m_FlushStats.m_nNumChangedSamplers += m_nNumDirtySamplers );
+	// DXVK only materializes sampler state for slots used by the active
+	// shaders. Preserve dirties for inactive slots and commit them if a later
+	// shader actually references the slot.
+	{
+	const uint nUsedSamplerMask =
+		m_drawingProgram[kGLMVertexProgram]->m_samplerMask |
+		m_drawingProgram[kGLMFragmentProgram]->m_samplerMask;
+	uint8 dirtySamplersToFlush[GLM_SAMPLER_COUNT];
+	uint nNumDirtySamplersToFlush = 0;
+	uint nNumDirtySamplersToKeep = 0;
+	for ( uint i = 0; i < m_nNumDirtySamplers; ++i )
+	{
+		const uint nSamplerIndex = m_nDirtySamplers[i];
+		if ( nUsedSamplerMask & ( 1u << nSamplerIndex ) )
+			dirtySamplersToFlush[nNumDirtySamplersToFlush++] = (uint8)nSamplerIndex;
+		else
+			m_nDirtySamplers[nNumDirtySamplersToKeep++] = (uint8)nSamplerIndex;
+	}
+	m_nNumDirtySamplers = nNumDirtySamplersToKeep;
+
+	GL_BATCH_PERF( m_FlushStats.m_nNumChangedSamplers += nNumDirtySamplersToFlush );
 
 #if !defined( OSX ) // no support for sampler objects in OSX 10.6 (GL 2.1 profile)
 	if ( m_bUseSamplerObjects)
 	{
-		while ( m_nNumDirtySamplers )
+		while ( nNumDirtySamplersToFlush )
 		{
-			const uint nSamplerIndex = m_nDirtySamplers[--m_nNumDirtySamplers];
+			const uint nSamplerIndex = dirtySamplersToFlush[--nNumDirtySamplersToFlush];
 			Assert( ( nSamplerIndex < GLM_SAMPLER_COUNT ) && ( !m_nDirtySamplerFlags[nSamplerIndex]) );
 
 			m_nDirtySamplerFlags[nSamplerIndex] = 1;
@@ -457,9 +481,9 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	else
 #endif // if !defined( OSX )
 	{
-		while ( m_nNumDirtySamplers )
+		while ( nNumDirtySamplersToFlush )
 		{
-			const uint nSamplerIndex = m_nDirtySamplers[--m_nNumDirtySamplers];
+			const uint nSamplerIndex = dirtySamplersToFlush[--nNumDirtySamplersToFlush];
 			Assert( ( nSamplerIndex < GLM_SAMPLER_COUNT ) && ( !m_nDirtySamplerFlags[nSamplerIndex]) );
 
 			m_nDirtySamplerFlags[nSamplerIndex] = 1;
@@ -504,6 +528,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 #endif
 			}
 		}
+	}
 	}
 
 	// vertex stage --------------------------------------------------------------------

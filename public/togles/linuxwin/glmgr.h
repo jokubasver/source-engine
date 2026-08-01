@@ -951,26 +951,43 @@ template<typename T> class GLState
 		inline GLState()
 		{
 			memset( &data, 0, sizeof(data) );
+			memset( &applied, 0, sizeof(applied) );
+			m_dirty = false;
 			Default();
 		}
 		
 		FORCEINLINE void Flush()
 		{
 			GLContextSet( &data );
+			applied = data;
+			m_dirty = false;
 		}
 
-		// write: client src into cache
-		// Delta-checked: skip the GL call when the cached value already matches.
-		// (The old "blast it out, GL calls are cheap on threaded desktop drivers"
-		// assumption does not hold on single-threaded mobile Mali drivers, where
-		// every redundant glEnable/glDepthFunc/glBlendFunc is real driver overhead.)
-		FORCEINLINE void Write( const T *src )
+		FORCEINLINE void FlushDirty()
+		{
+			if ( m_dirty )
+				Flush();
+		}
+
+		// Keep desired state separate from the state applied to GL. This mirrors
+		// DXVK's dirty-state model: multiple D3D changes before a draw collapse
+		// into one driver call, and changing a value back cancels the pending call.
+		FORCEINLINE bool Write( const T *src )
 		{
 			if ( !( data == *src ) )
 			{
 				data = *src;
-				Flush();
+				m_dirty = !( data == applied );
 			}
+			return m_dirty;
+		}
+
+		// Temporary internal state changes used by clear/blit operations must
+		// reach GL before the operation rather than waiting for the next draw.
+		FORCEINLINE void WriteAndFlush( const T *src )
+		{
+			Write( src );
+			FlushDirty();
 		}
 						
 		// default: write default value to cache, optionally write through
@@ -1004,6 +1021,8 @@ template<typename T> class GLState
 		
 	protected:
 		T data;
+		T applied;
+		bool m_dirty;
 };
 
 // caching state object template - with multiple values behind it that are indexed
@@ -1013,6 +1032,8 @@ template<typename T, int COUNT> class GLStateArray
 		inline GLStateArray()
 		{
 			memset( &data, 0, sizeof(data) );
+			memset( &applied, 0, sizeof(applied) );
+			m_dirtyMask = 0;
 			Default();
 		}
 
@@ -1020,22 +1041,41 @@ template<typename T, int COUNT> class GLStateArray
 		FORCEINLINE void FlushIndex( int index )
 		{
 			GLContextSetIndexed( &data[index], index );
+			applied[index] = data[index];
+			m_dirtyMask &= ~( 1u << index );
 		};
 
-		// write: client src into cache
-		// Delta-checked: skip the indexed GL call when the cached slot already matches.
-		FORCEINLINE void WriteIndex( T *src, int index )
+		FORCEINLINE bool WriteIndex( T *src, int index )
 		{
 			if ( !( data[index] == *src ) )
 			{
 				data[index] = *src;
-				FlushIndex( index );
+				if ( data[index] == applied[index] )
+					m_dirtyMask &= ~( 1u << index );
+				else
+					m_dirtyMask |= ( 1u << index );
 			}
+			return ( m_dirtyMask & ( 1u << index ) ) != 0;
 		};
 
 		// direct cache access (no GL call) - used by combined front+back writers
 		FORCEINLINE const T &GetDataIndex( int index ) const { return data[index]; }
-		FORCEINLINE void SetDataIndex( const T *src, int index ) { data[index] = *src; }
+		FORCEINLINE void SetDataIndex( const T *src, int index )
+		{
+			data[index] = *src;
+			applied[index] = *src;
+			m_dirtyMask &= ~( 1u << index );
+		}
+
+		FORCEINLINE void FlushDirty()
+		{
+			uint dirtyMask = m_dirtyMask;
+			for ( int i = 0; dirtyMask; ++i, dirtyMask >>= 1 )
+			{
+				if ( dirtyMask & 1u )
+					FlushIndex( i );
+			}
+		}
 						
 		// write all slots in the array
 		FORCEINLINE void Flush()
@@ -1050,7 +1090,7 @@ template<typename T, int COUNT> class GLStateArray
 		inline void DefaultIndex( int index )
 		{
 			GLContextGetDefaultIndexed( &data[index], index );	// read default values directly to our cache copy
-			Flush();
+			FlushIndex( index );
 		};
 		
 		inline void Default( void )
@@ -1097,6 +1137,8 @@ template<typename T, int COUNT> class GLStateArray
 		
 	protected:
 		T		data[COUNT];
+		T		applied[COUNT];
+		uint	m_dirtyMask;
 };
 
 
@@ -1308,19 +1350,19 @@ class GLMContext
 		void InvalidateSamplersForTex( CGLMTex *pTex );
 
 		FORCEINLINE void SetSamplerDirty( int sampler );
-		FORCEINLINE void SetSamplerMinFilter( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerMagFilter( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerMipFilter( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerAddressU( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerAddressV( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerAddressW( int sampler, GLenum Value );
-		FORCEINLINE void SetSamplerStates( int sampler, GLenum AddressU, GLenum AddressV, GLenum AddressW, GLenum minFilter, GLenum magFilter, GLenum mipFilter, int minLod, float lodBias );
-		FORCEINLINE void SetSamplerBorderColor( int sampler, DWORD Value );
-		FORCEINLINE void SetSamplerMipMapLODBias( int sampler, DWORD Value );
-		FORCEINLINE void SetSamplerMaxMipLevel( int sampler, DWORD Value );
-		FORCEINLINE void SetSamplerMaxAnisotropy( int sampler, DWORD Value );
-		FORCEINLINE void SetSamplerSRGBTexture( int sampler, DWORD Value );
-		FORCEINLINE void SetShadowFilter( int sampler, DWORD Value );
+		FORCEINLINE bool SetSamplerMinFilter( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerMagFilter( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerMipFilter( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerAddressU( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerAddressV( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerAddressW( int sampler, GLenum Value );
+		FORCEINLINE bool SetSamplerStates( int sampler, GLenum AddressU, GLenum AddressV, GLenum AddressW, GLenum minFilter, GLenum magFilter, GLenum mipFilter, int minLod, float lodBias );
+		FORCEINLINE bool SetSamplerBorderColor( int sampler, DWORD Value );
+		FORCEINLINE bool SetSamplerMipMapLODBias( int sampler, DWORD Value );
+		FORCEINLINE bool SetSamplerMaxMipLevel( int sampler, DWORD Value );
+		FORCEINLINE bool SetSamplerMaxAnisotropy( int sampler, DWORD Value );
+		FORCEINLINE bool SetSamplerSRGBTexture( int sampler, DWORD Value );
+		FORCEINLINE bool SetShadowFilter( int sampler, DWORD Value );
 		
 		// render targets (FBO's)
 		CGLMFBO	*NewFBO( void );
@@ -1379,6 +1421,7 @@ class GLMContext
 
 		// state sync
 		// If lazyUnbinding is true, unbound samplers will not actually be unbound to the GL device.
+		FORCEINLINE void FlushRenderStates();
 		FORCEINLINE void FlushDrawStates( uint nStartIndex, uint nEndIndex, uint nBaseVertex );				// pushes all drawing state - samplers, tex, programs, etc.
 		void FlushDrawStatesNoShaders();
 				
@@ -1410,36 +1453,36 @@ class GLMContext
 
 		// writers for the state block inputs
 		
-		FORCEINLINE void	WriteAlphaTestEnable( GLAlphaTestEnable_t *src ) { m_AlphaTestEnable.Write( src ); }
-		FORCEINLINE void	WriteAlphaTestFunc( GLAlphaTestFunc_t *src ) { m_AlphaTestFunc.Write( src ); }
-		FORCEINLINE void	WriteAlphaToCoverageEnable( GLAlphaToCoverageEnable_t *src ) { m_AlphaToCoverageEnable.Write( src ); }
-		FORCEINLINE void	WriteCullFaceEnable( GLCullFaceEnable_t *src ) { m_CullFaceEnable.Write( src ); }
-		FORCEINLINE void	WriteCullFrontFace( GLCullFrontFace_t *src ) { m_CullFrontFace.Write( src ); }
-		FORCEINLINE void	WritePolygonMode( GLPolygonMode_t *src ) { m_PolygonMode.Write( src ); }
-		FORCEINLINE void	WriteDepthBias( GLDepthBias_t *src ) { m_DepthBias.Write( src ); }
+		FORCEINLINE void	WriteAlphaTestEnable( GLAlphaTestEnable_t *src ) { m_bDirtyRenderStates |= m_AlphaTestEnable.Write( src ); }
+		FORCEINLINE void	WriteAlphaTestFunc( GLAlphaTestFunc_t *src ) { m_bDirtyRenderStates |= m_AlphaTestFunc.Write( src ); }
+		FORCEINLINE void	WriteAlphaToCoverageEnable( GLAlphaToCoverageEnable_t *src ) { m_bDirtyRenderStates |= m_AlphaToCoverageEnable.Write( src ); }
+		FORCEINLINE void	WriteCullFaceEnable( GLCullFaceEnable_t *src ) { m_bDirtyRenderStates |= m_CullFaceEnable.Write( src ); }
+		FORCEINLINE void	WriteCullFrontFace( GLCullFrontFace_t *src ) { m_bDirtyRenderStates |= m_CullFrontFace.Write( src ); }
+		FORCEINLINE void	WritePolygonMode( GLPolygonMode_t *src ) { m_bDirtyRenderStates |= m_PolygonMode.Write( src ); }
+		FORCEINLINE void	WriteDepthBias( GLDepthBias_t *src ) { m_bDirtyRenderStates |= m_DepthBias.Write( src ); }
 		FORCEINLINE void	WriteClipPlaneEnable( GLClipPlaneEnable_t *src, int which )
 		{
 			if ( !( m_ClipPlaneEnable.GetDataIndex( which ) == *src ) )
 				++m_nClipPlaneStateRevision;
-			m_ClipPlaneEnable.WriteIndex( src, which );
+			m_bDirtyRenderStates |= m_ClipPlaneEnable.WriteIndex( src, which );
 		}
-		FORCEINLINE void	WriteClipPlaneEquation( GLClipPlaneEquation_t *src, int which ) { m_ClipPlaneEquation.WriteIndex( src, which ); }
-		FORCEINLINE void	WriteScissorEnable( GLScissorEnable_t *src ) { m_ScissorEnable.Write( src ); }
-		FORCEINLINE void	WriteScissorBox( GLScissorBox_t *src ) { m_ScissorBox.Write( src ); }
-		FORCEINLINE void	WriteViewportBox( GLViewportBox_t *src ) { m_ViewportBox.Write( src ); }
-		FORCEINLINE void	WriteViewportDepthRange( GLViewportDepthRange_t *src ) { m_ViewportDepthRange.Write( src ); }
-		FORCEINLINE void	WriteColorMaskSingle( GLColorMaskSingle_t *src ) { m_ColorMaskSingle.Write( src ); }
-		FORCEINLINE void	WriteColorMaskMultiple( GLColorMaskMultiple_t *src, int which ) { m_ColorMaskMultiple.WriteIndex( src, which ); }
-		FORCEINLINE void	WriteBlendEnable( GLBlendEnable_t *src ) { m_BlendEnable.Write( src ); }
-		FORCEINLINE void	WriteBlendFactor( GLBlendFactor_t *src ) { m_BlendFactor.Write( src ); }
-		FORCEINLINE void	WriteBlendEquation( GLBlendEquation_t *src ) { m_BlendEquation.Write( src ); }
-		FORCEINLINE void	WriteBlendColor( GLBlendColor_t *src ) { m_BlendColor.Write( src ); }
+		FORCEINLINE void	WriteClipPlaneEquation( GLClipPlaneEquation_t *src, int which ) { m_bDirtyRenderStates |= m_ClipPlaneEquation.WriteIndex( src, which ); }
+		FORCEINLINE void	WriteScissorEnable( GLScissorEnable_t *src ) { m_bDirtyRenderStates |= m_ScissorEnable.Write( src ); }
+		FORCEINLINE void	WriteScissorBox( GLScissorBox_t *src ) { m_bDirtyRenderStates |= m_ScissorBox.Write( src ); }
+		FORCEINLINE void	WriteViewportBox( GLViewportBox_t *src ) { m_bDirtyRenderStates |= m_ViewportBox.Write( src ); }
+		FORCEINLINE void	WriteViewportDepthRange( GLViewportDepthRange_t *src ) { m_bDirtyRenderStates |= m_ViewportDepthRange.Write( src ); }
+		FORCEINLINE void	WriteColorMaskSingle( GLColorMaskSingle_t *src ) { m_bDirtyRenderStates |= m_ColorMaskSingle.Write( src ); }
+		FORCEINLINE void	WriteColorMaskMultiple( GLColorMaskMultiple_t *src, int which ) { m_bDirtyRenderStates |= m_ColorMaskMultiple.WriteIndex( src, which ); }
+		FORCEINLINE void	WriteBlendEnable( GLBlendEnable_t *src ) { m_bDirtyRenderStates |= m_BlendEnable.Write( src ); }
+		FORCEINLINE void	WriteBlendFactor( GLBlendFactor_t *src ) { m_bDirtyRenderStates |= m_BlendFactor.Write( src ); }
+		FORCEINLINE void	WriteBlendEquation( GLBlendEquation_t *src ) { m_bDirtyRenderStates |= m_BlendEquation.Write( src ); }
+		FORCEINLINE void	WriteBlendColor( GLBlendColor_t *src ) { m_bDirtyRenderStates |= m_BlendColor.Write( src ); }
 
 		FORCEINLINE void	WriteBlendEnableSRGB( GLBlendEnableSRGB_t *src ) 
 		{
 			if (m_caps.m_hasGammaWrites)	// only if caps allow do we actually push it through to the extension
 			{
-				m_BlendEnableSRGB.Write( src );
+				m_bDirtyRenderStates |= m_BlendEnableSRGB.Write( src );
 			}
 			else
 			{
@@ -1449,12 +1492,12 @@ class GLMContext
 			// if fake SRGB mode is in place (m_caps.m_hasGammaWrites is false)
 		}
 
-		FORCEINLINE void	WriteDepthTestEnable( GLDepthTestEnable_t *src ) { m_DepthTestEnable.Write( src ); }
-		FORCEINLINE void	WriteDepthFunc( GLDepthFunc_t *src ) { m_DepthFunc.Write( src ); }
-		FORCEINLINE void	WriteDepthMask( GLDepthMask_t *src ) { m_DepthMask.Write( src ); }
-		FORCEINLINE void	WriteStencilTestEnable( GLStencilTestEnable_t *src ) { m_StencilTestEnable.Write( src ); }
-		FORCEINLINE void	WriteStencilFunc( GLStencilFunc_t *src ) { m_StencilFunc.Write( src ); }
-		FORCEINLINE void	WriteStencilOp( GLStencilOp_t *src, int which ) { m_StencilOp.WriteIndex( src, which ); }
+		FORCEINLINE void	WriteDepthTestEnable( GLDepthTestEnable_t *src ) { m_bDirtyRenderStates |= m_DepthTestEnable.Write( src ); }
+		FORCEINLINE void	WriteDepthFunc( GLDepthFunc_t *src ) { m_bDirtyRenderStates |= m_DepthFunc.Write( src ); }
+		FORCEINLINE void	WriteDepthMask( GLDepthMask_t *src ) { m_bDirtyRenderStates |= m_DepthMask.Write( src ); }
+		FORCEINLINE void	WriteStencilTestEnable( GLStencilTestEnable_t *src ) { m_bDirtyRenderStates |= m_StencilTestEnable.Write( src ); }
+		FORCEINLINE void	WriteStencilFunc( GLStencilFunc_t *src ) { m_bDirtyRenderStates |= m_StencilFunc.Write( src ); }
+		FORCEINLINE void	WriteStencilOp( GLStencilOp_t *src, int which ) { m_bDirtyRenderStates |= m_StencilOp.WriteIndex( src, which ); }
 		// D3D9 has no separate front/back stencil ops, so the D3D layer always sets
 		// both faces identically. Emit a single glStencilOpSeparate(GL_FRONT_AND_BACK)
 		// instead of two per-face calls, and keep both cache slots consistent.
@@ -1467,10 +1510,10 @@ class GLMContext
 			m_StencilOp.SetDataIndex( src, 0 );
 			m_StencilOp.SetDataIndex( src, 1 );
 		}
-		FORCEINLINE void	WriteStencilWriteMask( GLStencilWriteMask_t *src ) { m_StencilWriteMask.Write( src ); }
-		FORCEINLINE void	WriteClearColor( GLClearColor_t *src ) { m_ClearColor.Write( src ); }
-		FORCEINLINE void	WriteClearDepth( GLClearDepth_t *src ) { m_ClearDepth.Write( src ); }
-		FORCEINLINE void	WriteClearStencil( GLClearStencil_t *src ) { m_ClearStencil.Write( src ); }
+		FORCEINLINE void	WriteStencilWriteMask( GLStencilWriteMask_t *src ) { m_bDirtyRenderStates |= m_StencilWriteMask.Write( src ); }
+		FORCEINLINE void	WriteClearColor( GLClearColor_t *src ) { m_bDirtyRenderStates |= m_ClearColor.Write( src ); }
+		FORCEINLINE void	WriteClearDepth( GLClearDepth_t *src ) { m_bDirtyRenderStates |= m_ClearDepth.Write( src ); }
+		FORCEINLINE void	WriteClearStencil( GLClearStencil_t *src ) { m_bDirtyRenderStates |= m_ClearStencil.Write( src ); }
 
 		// debug stuff
 		void	BeginFrame( void );
@@ -1522,8 +1565,9 @@ class GLMContext
 				m_nBoundGLBuffer[kGLMVertexBuffer] = nGLName;
 				gGL->glBindBuffer( GL_ARRAY_BUFFER, nGLName );
 			}
-			else if ( ( curAttribs.m_pPtr == pBuf ) && 
-					  ( curAttribs.m_revision == nRevision ) &&
+			if ( ( curAttribs.m_nGLName == nGLName ) &&
+				( curAttribs.m_pPtr == pBuf ) &&
+				( curAttribs.m_revision == nRevision ) &&
 				( curAttribs.m_stride == stride ) &&
 				( curAttribs.m_datatype == datatype ) &&
 				( curAttribs.m_normalized == normalized ) &&
@@ -1538,6 +1582,7 @@ class GLMContext
 			curAttribs.m_stride = stride;
 			curAttribs.m_pPtr = pBuf;
 			curAttribs.m_revision = nRevision;
+			curAttribs.m_nGLName = nGLName;
 			
 			gGL->glVertexAttribPointer( nIndex, nCompCount, datatype, normalized, stride, pBuf );
 		}
@@ -1677,6 +1722,7 @@ class GLMContext
 		GLState<GLClearColor_t>			m_ClearColor;		
 		GLState<GLClearDepth_t>			m_ClearDepth;		
 		GLState<GLClearStencil_t>		m_ClearStencil;		
+		bool							m_bDirtyRenderStates;
 		
 		// texture bindings and sampler setup
 		int								m_activeTexture;		// mirror for glActiveTexture
@@ -1770,6 +1816,7 @@ class GLMContext
 			GLuint m_stride;
 			const void *m_pPtr;
 			uint m_revision;
+			GLuint m_nGLName;
 		};
 
 		VertexAttribs_t					m_boundVertexAttribs[ kGLMVertexAttributeIndexMax ];	// tracked per attrib for dupe-set-absorb
@@ -1857,6 +1904,45 @@ class GLMContext
 	void ProcessTextureDeletes();
 	CTSQueue<CGLMTex*> m_DeleteTextureQueue;
 };
+
+FORCEINLINE void GLMContext::FlushRenderStates()
+{
+	if ( !m_bDirtyRenderStates )
+		return;
+
+	m_AlphaTestEnable.FlushDirty();
+	m_AlphaTestFunc.FlushDirty();
+	m_AlphaToCoverageEnable.FlushDirty();
+	m_CullFaceEnable.FlushDirty();
+	m_CullFrontFace.FlushDirty();
+	m_PolygonMode.FlushDirty();
+	m_DepthBias.FlushDirty();
+	m_ClipPlaneEnable.FlushDirty();
+	m_ClipPlaneEquation.FlushDirty();
+	m_ScissorEnable.FlushDirty();
+	m_ScissorBox.FlushDirty();
+	m_ViewportBox.FlushDirty();
+	m_ViewportDepthRange.FlushDirty();
+	m_ColorMaskSingle.FlushDirty();
+	m_ColorMaskMultiple.FlushDirty();
+	m_BlendEnable.FlushDirty();
+	m_BlendFactor.FlushDirty();
+	m_BlendEquation.FlushDirty();
+	m_BlendColor.FlushDirty();
+	m_BlendEnableSRGB.FlushDirty();
+	m_DepthTestEnable.FlushDirty();
+	m_DepthFunc.FlushDirty();
+	m_DepthMask.FlushDirty();
+	m_StencilTestEnable.FlushDirty();
+	m_StencilFunc.FlushDirty();
+	m_StencilOp.FlushDirty();
+	m_StencilWriteMask.FlushDirty();
+	m_ClearColor.FlushDirty();
+	m_ClearDepth.FlushDirty();
+	m_ClearStencil.FlushDirty();
+
+	m_bDirtyRenderStates = false;
+}
 
 #if 1 //ifndef OSX
 
@@ -2263,51 +2349,70 @@ FORCEINLINE void GLMContext::SetSamplerTex( int sampler, CGLMTex *tex )
 					gGL->glBindMultiTextureEXT( GL_TEXTURE0 + sampler, tex->m_texGLTarget, tex->m_texName );
 				}
 		}
-	}
-	
-	if ( !m_bUseSamplerObjects )
-	{
+
+		// A texture change always invalidates the effective sampling state.
+		// Without sampler objects the parameters live on the texture itself;
+		// with sampler objects the selected object can still depend on this
+		// texture's current m_maxActiveMip clamp.
 		SetSamplerDirty( sampler );
 	}
 }
 
-FORCEINLINE void GLMContext::SetSamplerMinFilter( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerMinFilter( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_FILTER_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_minFilter == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_minFilter = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerMagFilter( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerMagFilter( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MAG_FILTER_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_magFilter == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_magFilter = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerMipFilter( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerMipFilter( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIP_FILTER_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_mipFilter == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_mipFilter = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerAddressU( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerAddressU( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_ADDRESS_BITS) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_addressU == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_addressU = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerAddressV( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerAddressV( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_ADDRESS_BITS) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_addressV == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_addressV = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerAddressW( int sampler, GLenum Value )
+FORCEINLINE bool GLMContext::SetSamplerAddressW( int sampler, GLenum Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_ADDRESS_BITS) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_addressW == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_addressW = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerStates( int sampler, GLenum AddressU, GLenum AddressV, GLenum AddressW, GLenum minFilter, GLenum magFilter, GLenum mipFilter, int minLod, float lodBias )
+FORCEINLINE bool GLMContext::SetSamplerStates( int sampler, GLenum AddressU, GLenum AddressV, GLenum AddressW, GLenum minFilter, GLenum magFilter, GLenum mipFilter, int minLod, float lodBias )
 {
 	Assert( AddressU < ( 1 << GLM_PACKED_SAMPLER_PARAMS_ADDRESS_BITS) );
 	Assert( AddressV < ( 1 << GLM_PACKED_SAMPLER_PARAMS_ADDRESS_BITS) );
@@ -2318,6 +2423,18 @@ FORCEINLINE void GLMContext::SetSamplerStates( int sampler, GLenum AddressU, GLe
 	Assert( minLod < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) );
 
 	GLMTexSamplingParams &params = m_samplers[sampler].m_samp;
+	if ( ( params.m_packed.m_addressU == AddressU ) &&
+		 ( params.m_packed.m_addressV == AddressV ) &&
+		 ( params.m_packed.m_addressW == AddressW ) &&
+		 ( params.m_packed.m_minFilter == minFilter ) &&
+		 ( params.m_packed.m_magFilter == magFilter ) &&
+		 ( params.m_packed.m_mipFilter == mipFilter ) &&
+		 ( params.m_packed.m_minLOD == minLod ) &&
+		 ( params.m_lodBias == lodBias ) )
+	{
+		return false;
+	}
+
 	params.m_packed.m_addressU = AddressU;
 	params.m_packed.m_addressV = AddressV;
 	params.m_packed.m_addressW = AddressW;
@@ -2327,14 +2444,18 @@ FORCEINLINE void GLMContext::SetSamplerStates( int sampler, GLenum AddressU, GLe
 	params.m_packed.m_minLOD = minLod;
 
 	params.m_lodBias = lodBias;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerBorderColor( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetSamplerBorderColor( int sampler, DWORD Value )
 {
+	if ( m_samplers[sampler].m_samp.m_borderColor == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_borderColor = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerMipMapLODBias( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetSamplerMipMapLODBias( int sampler, DWORD Value )
 {
 	typedef union {
 		DWORD asDword;
@@ -2344,35 +2465,50 @@ FORCEINLINE void GLMContext::SetSamplerMipMapLODBias( int sampler, DWORD Value )
 	Convert_t c;
 	c.asDword = Value;
 
+	if ( m_samplers[sampler].m_samp.m_lodBias == c.asFloat )
+		return false;
 	m_samplers[sampler].m_samp.m_lodBias = c.asFloat;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerMaxMipLevel( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetSamplerMaxMipLevel( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MIN_LOD_BITS ) );
 	// D3DSAMP_MAXMIPLEVEL is the most-detail (fine) LOD cap = "lowest mip level the sampler may use".
 	// It maps to GL_TEXTURE_MIN_LOD (a fine cap), NOT to GL_TEXTURE_MAX_LOD (a coarse cap).
 	// D3D's default value of 0 means "no fine cap", which corresponds to MIN_LOD = 0.
 	// The coarse cap is instead driven per-texture from WriteTexels' m_maxActiveMip tracker.
+	if ( m_samplers[sampler].m_samp.m_packed.m_minLOD == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_minLOD = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerMaxAnisotropy( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetSamplerMaxAnisotropy( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_MAX_ANISO_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_maxAniso == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_maxAniso = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetSamplerSRGBTexture( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetSamplerSRGBTexture( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_SRGB_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_srgb == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_srgb = Value;
+	return true;
 }
 
-FORCEINLINE void GLMContext::SetShadowFilter( int sampler, DWORD Value )
+FORCEINLINE bool GLMContext::SetShadowFilter( int sampler, DWORD Value )
 {
 	Assert( Value < ( 1 << GLM_PACKED_SAMPLER_PARAMS_COMPARE_MODE_BITS ) );
+	if ( m_samplers[sampler].m_samp.m_packed.m_compareMode == Value )
+		return false;
 	m_samplers[sampler].m_samp.m_packed.m_compareMode = Value;
+	return true;
 }
 
 FORCEINLINE void GLMContext::BindIndexBufferToCtx( CGLMBuffer *buff )
