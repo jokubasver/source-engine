@@ -3632,6 +3632,39 @@ void _Host_RunFrame (float time)
 
 	Host_ShowIPCCallCount();
 }
+//-----------------------------------------------------------------------------
+// Main-thread frame timing (main_thread_timing convar): measures the game
+// thread's per-frame work (sim + material queue building). In queued-threaded
+// material mode the render thread runs in parallel, so FPS is the higher of
+// this and the render thread's CPU time (see gl_gpu_timing's CPU(preswap)).
+// Declared at file scope so the +command line can set it before the first frame.
+//-----------------------------------------------------------------------------
+static ConVar main_thread_timing( "main_thread_timing", "0", FCVAR_NONE, "0=off, 1=report main-thread frame time once per second, 2=every frame" );
+
+static void MainThreadFrameTimingReport( double flFrameStart )
+{
+	static double flReportStart = Sys_FloatTime();
+	static int nReportFrames = 0;
+	static double flAccumMs = 0.0;
+
+	if ( !main_thread_timing.GetInt() )
+		return;
+
+	const double flNow = Sys_FloatTime();
+	const double flFrameMs = ( flNow - flFrameStart ) * 1000.0;
+	flAccumMs += flFrameMs;
+	nReportFrames++;
+
+	if ( main_thread_timing.GetInt() >= 2 || ( flNow - flReportStart ) >= 1.0 )
+	{
+		Msg( "Main thread: %d frames | avg %4.2f ms | last %4.2f ms\n",
+			nReportFrames, flAccumMs / nReportFrames, flFrameMs );
+		nReportFrames = 0;
+		flAccumMs = 0.0;
+		flReportStart = flNow;
+	}
+}
+
 /*
 ==============================
 Host_Frame
@@ -3643,6 +3676,8 @@ void Host_RunFrame( float time )
 	static  double	timetotal = 0;
 	static  int		timecount = 0;
 	static	double  timestart = 0;
+
+	const double flFrameStartTime = Sys_FloatTime();
 
 #ifndef SWDS
 	if ( !scr_drawloading && sv.IsActive() && cl.IsActive() && !sv.m_bLoadgame)
@@ -3663,6 +3698,7 @@ void Host_RunFrame( float time )
 	if ( !host_profile.GetBool() )
 	{
 		_Host_RunFrame( time );
+		MainThreadFrameTimingReport( flFrameStartTime );
 		return;
 	}
 
@@ -3676,7 +3712,10 @@ void Host_RunFrame( float time )
 	timecount++;
 
 	if (timecount < 1000)
+	{
+		MainThreadFrameTimingReport( flFrameStartTime );
 		return;
+	}
 
 	float fps = 1000/(time2 - timestart);
 
@@ -3686,6 +3725,8 @@ void Host_RunFrame( float time )
 	timecount = 0;
 	timetotal = 0;
 	timestart = time2;
+
+	MainThreadFrameTimingReport( flFrameStartTime );
 }
 
 
