@@ -55,28 +55,78 @@ FORCEINLINE GLuint GLMContext::FindSamplerObject( const GLMTexSamplingParams &de
 {
 	uint32 lodBits;
 	memcpy( &lodBits, &desiredParams.m_lodBias, sizeof(lodBits) );
-	int h = bitmix32( desiredParams.m_bits + desiredParams.m_borderColor + bitmix32(lodBits) ) & ( cSamplerObjectHashSize - 1 );
-	while ( ( m_samplerObjectHash[h].m_params.m_bits != desiredParams.m_bits ) || ( m_samplerObjectHash[h].m_params.m_borderColor != desiredParams.m_borderColor ) || ( m_samplerObjectHash[h].m_params.m_lodBias != desiredParams.m_lodBias ) )
-	{
-		if ( !m_samplerObjectHash[h].m_params.m_packed.m_isValid )
-			break;
-		if ( ++h >= cSamplerObjectHashSize )
-			h = 0;
-	}
+	const uint nHashKey = desiredParams.m_bits + desiredParams.m_borderColor + bitmix32(lodBits);
 
-	if ( !m_samplerObjectHash[h].m_params.m_packed.m_isValid )
+	for ( ;; )
 	{
-		GLMTexSamplingParams &hashParams = m_samplerObjectHash[h].m_params;
-		hashParams = desiredParams;
-		hashParams.SetToSamplerObject( m_samplerObjectHash[h].m_samplerObject );
-		if ( ++m_nSamplerObjectHashNumEntries == cSamplerObjectHashSize )
+		const uint nHashSize = m_nSamplerObjectHashSize;
+		const uint nHashMask = nHashSize - 1;
+		uint h = bitmix32( nHashKey ) & nHashMask;
+		uint nProbes = 0;
+		uint nFirstOpen = nHashSize;	// first insertable (tombstone) slot seen; nHashSize == none
+
+		// Linear probe.  Tombstone slots are skipped (the key may live past
+		// them) but remembered as an insertion point; the probe stops only at
+		// a live match, a genuinely empty slot, or a full wrap.
+		for ( ;; )
 		{
-			// TODO: Support resizing
-			Error( "Sampler object hash is full, increase cSamplerObjectHashSize" );
-		}
-	}
+			const GLMTexSamplingParams &slotParams = m_samplerObjectHash[h].m_params;
 
-	return m_samplerObjectHash[h].m_samplerObject;
+			if ( slotParams.m_packed.m_isValid )
+			{
+				if ( ( slotParams.m_bits == desiredParams.m_bits ) &&
+					 ( slotParams.m_borderColor == desiredParams.m_borderColor ) &&
+					 ( slotParams.m_lodBias == desiredParams.m_lodBias ) )
+				{
+					return m_samplerObjectHash[h].m_samplerObject;	// live match
+				}
+			}
+			else if ( !slotParams.m_packed.m_tombstone )
+			{
+				// Genuinely empty: probes never pass an empty slot, so the key
+				// is absent and this is the insertion point.
+				nFirstOpen = h;
+				break;
+			}
+			else if ( nFirstOpen == nHashSize )
+			{
+				nFirstOpen = h;	// remember the first tombstone, keep probing
+			}
+
+			if ( ++nProbes >= nHashSize )
+			{
+				// Wrapped the whole table without finding an empty slot.
+				break;
+			}
+			if ( ++h > nHashMask )
+				h = 0;
+		}
+
+		if ( nFirstOpen == nHashSize )
+		{
+			// No empty slot and no tombstone in the chain: the table is full
+			// of live entries and this key is absent.  Make room and re-probe;
+			// the old fixed-size table would spin forever here.
+			if ( m_nSamplerObjectHashSize >= cMaxSamplerObjectHashSize )
+				EvictSamplerObjectHashEntry();
+			else
+				GrowSamplerObjectHash();
+			continue;
+		}
+
+		// Insert at the remembered slot (empty, or the first tombstone in the
+		// probe chain).  Copying desiredParams clears the tombstone bit, so the
+		// slot becomes a live entry again.
+		if ( !m_samplerObjectHash[nFirstOpen].m_samplerObject )
+		{
+			gGL->glGenSamplers( 1, &m_samplerObjectHash[nFirstOpen].m_samplerObject );
+		}
+		GLMTexSamplingParams &hashParams = m_samplerObjectHash[nFirstOpen].m_params;
+		hashParams = desiredParams;
+		hashParams.SetToSamplerObject( m_samplerObjectHash[nFirstOpen].m_samplerObject );
+		m_nSamplerObjectHashNumEntries++;
+		return m_samplerObjectHash[nFirstOpen].m_samplerObject;
+	}
 }
 
 #endif // !OSX
@@ -442,24 +492,27 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			m_nDirtySamplerFlags[nSamplerIndex] = 1;
 
-			// On GLES drivers without GL_APPLE_texture_max_level the per-texture coarse cap (highest
-			// mip that has been written so far) cannot be set on the texture object via
-			// GL_TEXTURE_MAX_LEVEL. Apply it as a sampler-side GL_TEXTURE_MAX_LOD clamp at flush time
-			// instead, by intersecting the D3D-requested coarse cap with pTex->m_maxActiveMip. The
-			// clamped copy is what we hand to FindSamplerObject; the underlying sampler state in
-			// m_samplers[] is left untouched so re-uploads can relax the cap as mips stream in.
+			// On drivers where the texture object accepts the per-texture
+			// coarse cap (GL_TEXTURE_MAX_LEVEL, probed at startup and emitted
+			// from CGLMTex::WriteTexels), the sampler needs no clamping.  Only
+			// fall back to a sampler-side GL_TEXTURE_MAX_LOD clamp for targets
+			// the driver rejects (some mobile GLES drivers error on the pname
+			// despite ES 3.2).  Keeping the clamp off where possible avoids
+			// allocating a distinct sampler object per (texture, mip-streaming-
+			// step) combination.
 			GLMTexSamplingParams samp = m_samplers[nSamplerIndex].m_samp;
-			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
 			{
 				CGLMTex *pTex = m_samplers[nSamplerIndex].m_pBoundTex;
-				if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) )
+				if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) &&
+					 !gGL->HaveCoreTexLevelClamp( pTex->m_layout->m_key.m_texGLTarget ) )
 				{
 					int maxActiveMip = pTex->m_maxActiveMip;
 					if ( maxActiveMip >= 0 && (int)samp.m_packed.m_maxLOD > maxActiveMip )
 						samp.m_packed.m_maxLOD = maxActiveMip;
 				}
 			}
-			gGL->glBindSampler( nSamplerIndex, FindSamplerObject( samp ) );
+			m_nBoundSamplerObject[nSamplerIndex] = FindSamplerObject( samp );
+			gGL->glBindSampler( nSamplerIndex, m_nBoundSamplerObject[nSamplerIndex] );
 
 			GL_BATCH_PERF( m_FlushStats.m_nNumSamplingParamsChanged++ );
 
@@ -492,19 +545,17 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 			CGLMTex *pTex = m_samplers[nSamplerIndex].m_pBoundTex;
 
-			// Same context as the sampler-object branch above: clamp to MAX_LOD = MIN(requested,
-			// pTex->m_maxActiveMip) when GL_TEXTURE_MAX_LEVEL is unavailable. The clamped copy feeds
-			// both the differential comparator and the DeltaSetToTarget emitter, and becomes the
-			// texture's new latched sampling state so subsequent flushes can correctly diff again.
+			// See the sampler-object branch above: only clamp the sampler-side
+			// GL_TEXTURE_MAX_LOD for texture targets that rejected the
+			// texture-object level cap in the startup probe; accepted targets
+			// carry the cap on the texture object itself.
 			GLMTexSamplingParams samp = m_samplers[nSamplerIndex].m_samp;
-			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
+			if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) &&
+				 !gGL->HaveCoreTexLevelClamp( pTex->m_layout->m_key.m_texGLTarget ) )
 			{
-				if ( pTex && ( pTex->m_layout->m_key.m_texFlags & kGLMTexMipped ) )
-				{
-					int maxActiveMip = pTex->m_maxActiveMip;
-					if ( maxActiveMip >= 0 && (int)samp.m_packed.m_maxLOD > maxActiveMip )
-						samp.m_packed.m_maxLOD = maxActiveMip;
-				}
+				int maxActiveMip = pTex->m_maxActiveMip;
+				if ( maxActiveMip >= 0 && (int)samp.m_packed.m_maxLOD > maxActiveMip )
+					samp.m_packed.m_maxLOD = maxActiveMip;
 			}
 
 			if ( ( pTex ) && ( !( pTex->m_SamplingParams == samp ) ) )
@@ -735,6 +786,22 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		{
 			gGL->glUniform1f( m_pBoundPair->m_locAlphaRef, alphaRef );
 			m_pBoundPair->m_alphaRefValue = alphaRef;
+		}
+	}
+
+	// Fake-SRGB mode: when the driver has no GL_FRAMEBUFFER_SRGB toggle
+	// (OpenGL ES without GL_EXT_sRGB_write_control), WriteBlendEnableSRGB
+	// shunts D3DRS_SRGBWRITEENABLE into m_FakeBlendEnableSRGB.  The compiled
+	// shader then carries a flSRGBWrite uniform (D3DToGL_OptionSRGBWriteSuffix)
+	// that must be driven per draw - without this upload it stays 0 and the
+	// sRGB write emulation silently does nothing.
+	if ( m_pBoundPair->m_locFragmentFakeSRGBEnable >= 0 )
+	{
+		const float flFakeSRGB = m_FakeBlendEnableSRGB ? 1.0f : 0.0f;
+		if ( m_pBoundPair->m_fakeSRGBEnableValue != flFakeSRGB )
+		{
+			gGL->glUniform1f( m_pBoundPair->m_locFragmentFakeSRGBEnable, flFakeSRGB );
+			m_pBoundPair->m_fakeSRGBEnableValue = flFakeSRGB;
 		}
 	}
 
