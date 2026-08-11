@@ -475,6 +475,12 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 			g_bUsePseudoBufs = true;
 		if( CommandLine()->FindParm( "-gl_enable_static_buffer" ) )
 			g_bDisableStaticBuffer = false;
+		// The persistent-buffer ring stays an explicit opt-in (-gl_enable_buffer_storage).
+		// The stable-base/slice-per-discard model (see CGLMBuffer::Lock) is correct
+		// against the engine's lock patterns, but on Mali-G31 r13p0 the persistent
+		// coherent mapping itself produces random-triangle flicker that no amount of
+		// slice or fence bookkeeping removes (the equivalent plain-VBO map path with
+		// explicit flushes renders cleanly), so it is not enabled by default.
 		if ( bDriverSupportsBufferStorage &&
 			CommandLine()->FindParm( "-gl_enable_buffer_storage" ) )
 		{
