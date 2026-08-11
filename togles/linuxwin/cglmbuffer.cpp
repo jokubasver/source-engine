@@ -208,10 +208,25 @@ void CPersistentBuffer::Init( EGLMBufferType type,uint nSize )
 
 		// Create persistent immutable buffer that we will permanently map.  This buffer can be written from any thread (not just
 		// the renderthread)
-		gGL->glBufferStorageEXT( m_buffGLTarget, m_nSize, (const GLvoid *)NULL, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT ); // V_GL_REQ: GL_EXT_buffer_storage, GL_ARB_map_buffer_range, GL_VERSION_4_4
+		//
+		// GL_MAP_COHERENT_BIT is the default, but some mobile GLES drivers
+		// (observed on Mali-G31 r13p0) expose a persistent mapping whose
+		// "coherent" behavior is not actually write-through - writes stay
+		// stale on the GPU side no matter how the ring is managed, producing
+		// random-triangle flicker.  -gl_persistent_no_coherent drops the
+		// coherent bit and relies on the explicit glFlushMappedBufferRange in
+		// CGLMBuffer::Unlock instead (a diagnostic to isolate the driver
+		// behavior; both must map and flush consistently).
+		GLbitfield nMapFlags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT;
+		if ( !CommandLine()->FindParm( "-gl_persistent_no_coherent" ) )
+		{
+			nMapFlags |= GL_MAP_COHERENT_BIT;
+		}
+
+		gGL->glBufferStorageEXT( m_buffGLTarget, m_nSize, (const GLvoid *)NULL, nMapFlags ); // V_GL_REQ: GL_EXT_buffer_storage, GL_ARB_map_buffer_range, GL_VERSION_4_4
 
 		// Map the buffer for all of eternity.  Pointer can be used from multiple threads.
-		m_pImmutablePersistentBuf = gGL->glMapBufferRange( m_buffGLTarget, 0, m_nSize, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT ); // V_GL_REQ: GL_ARB_map_buffer_range, GL_EXT_buffer_storage, GL_VERSION_4_4
+		m_pImmutablePersistentBuf = gGL->glMapBufferRange( m_buffGLTarget, 0, m_nSize, nMapFlags ); // V_GL_REQ: GL_ARB_map_buffer_range, GL_EXT_buffer_storage, GL_VERSION_4_4
 		Assert( m_pImmutablePersistentBuf != NULL );
 	}
 }
@@ -254,13 +269,27 @@ void CPersistentBuffer::BlockUntilNotBusy()
 #ifdef HAVE_GL_ARB_SYNC
 	if (m_nSyncObj)
 	{
-		// 1s is generous for a 2-3 frame ring on any part we target; if this
-		// ever fires the GPU is wedged or the ring was sized too small.  The
-		// old 3s timeout just hid the stall.
-		GLenum result = gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
-		if ( result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED )
+		if ( CommandLine()->FindParm( "-gl_persistent_finish" ) )
 		{
-			Warning( "CPersistentBuffer: glClientWaitSync timed out (0x%X)\n", (int)result );
+			// Diagnostic: some mobile GLES drivers (Mali-G31 r13p0) appear to
+			// signal GL sync objects before the GPU has actually retired the
+			// referenced work, letting the ring overwrite data the GPU still
+			// reads (random-triangle flicker that no slice/bookkeeping model
+			// removes).  glFinish blocks until ALL prior work completes, so a
+			// clean result with this switch implicates the fence machinery;
+			// a dirty result implicates the persistent mapping itself.
+			gGL->glFinish();
+		}
+		else
+		{
+			// 1s is generous for a 2-3 frame ring on any part we target; if this
+			// ever fires the GPU is wedged or the ring was sized too small.  The
+			// old 3s timeout just hid the stall.
+			GLenum result = gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
+			if ( result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED )
+			{
+				Warning( "CPersistentBuffer: glClientWaitSync timed out (0x%X)\n", (int)result );
+			}
 		}
 
 		gGL->glDeleteSync( m_nSyncObj );
@@ -833,20 +862,6 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 	m_pStaticBuffer = NULL;
 	bool bUsingPersistentBuffer = false;
 
-	uint padding = 0;
-	if ( m_bDynamic && gGL->m_bHave_GL_EXT_buffer_storage )
-	{
-		// Compute padding to add to make sure the start offset is valid
-		CPersistentBuffer *pTempBuffer = m_pCtx->GetCurPersistentBuffer( m_type );
-		uint persistentBufferOffset = pTempBuffer->GetOffset();
-
-		if (pParams->m_nOffset > persistentBufferOffset)
-		{
-			// Make sure the start offset if valid (adding padding to the persistent buffer)
-			padding = pParams->m_nOffset - persistentBufferOffset;
-		}
-	}
-	
 	if ( m_bPseudo )
 	{
 		// The attrib-pointer cache (SetBufAndVertexAttribPointer) keys on the
@@ -900,38 +915,45 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 		}
 #endif
 	}
-	else if ( m_bDynamic && gGL->m_bHave_GL_EXT_buffer_storage && ( m_pCtx->GetCurPersistentBuffer( m_type )->GetBytesRemaining() >= ( pParams->m_nSize + padding ) ) )
+	else if ( m_bDynamic && gGL->m_bHave_GL_EXT_buffer_storage &&
+			  ( ( !pParams->m_bDiscard && m_bUsingPersistentBuffer && ( m_nPersistentBufferSlot == m_pCtx->GetCurPersistentBufferIndex() ) ) ||
+				( m_pCtx->GetCurPersistentBuffer( m_type )->GetBytesRemaining() >= m_nSize ) ) )
 	{
+		// Persistent ring path.  Every DISCARD - the frame-start reset or a
+		// mid-frame wrap when the engine's shared buffer fills up - starts a
+		// FRESH slice in the ring and latches a stable base for it.  The
+		// engine writes at offset 0 after a discard and keeps the previous
+		// slice's draws queued, so slices must never be reused within a frame.
+		// NOOVERWRITE appends resolve to base + lockOffset inside the live
+		// slice.  (The original append-per-lock model moved the base on every
+		// lock, breaking chunk draws; the first stable-base attempt reused the
+		// slice on mid-frame wraps, overwriting the queued geometry - the
+		// flicker.)
 		CPersistentBuffer *pTempBuffer = m_pCtx->GetCurPersistentBuffer( m_type );
+		const bool bHasLiveSlice = m_bUsingPersistentBuffer && ( m_nPersistentBufferSlot == m_pCtx->GetCurPersistentBufferIndex() );
 
-		// Make sure the start offset if valid (adding padding to the persistent buffer)
-		pTempBuffer->Append( padding );
-
-		uint persistentBufferOffset = pTempBuffer->GetOffset();
-		uint startOffset = persistentBufferOffset - pParams->m_nOffset;
-
-		if ( pParams->m_bDiscard || ( startOffset != m_nPersistentBufferStartOffset ) )
+		if ( !pParams->m_bDiscard && bHasLiveSlice )
 		{
-			m_nRevision++;
-			// Offset to be added to the vertex and index buffer when setting the vertex and index buffer (before drawing)
-			// Since we are using a immutable buffer storage, the persistent buffer is actually bigger than
-			// buffer size requested upon creation. We keep appending to the end of the persistent buffer 
-			// and therefore need to keep track of the start of the actual buffer (in the persistent one)
-			m_nPersistentBufferStartOffset = startOffset;
-
-			//DevMsg( "Discard (%s): startOffset = %d\n", pParams->m_bDiscard ? "true" : "false", m_nPersistentBufferStartOffset );
+			// NOOVERWRITE append into the live slice - the base is stable for
+			// the whole slice, so every draw resolves its own lock offset
+			// against the same ring region.
+			resultPtr = static_cast<char*>(pTempBuffer->GetPtr()) + m_nPersistentBufferStartOffset + pParams->m_nOffset;
+			bUsingPersistentBuffer = true;
 		}
-
-		resultPtr = static_cast<char*>(pTempBuffer->GetPtr()) + persistentBufferOffset;
-		bUsingPersistentBuffer = true;
-
-		// Remember which ring slot the data landed in.  GetHandle() must bind
-		// THAT slot's buffer (not the current one) so a draw in a later frame
-		// that reuses the locked data (legal D3D9 usage) still references the
-		// slot that holds it.
-		m_nPersistentBufferSlot = m_pCtx->GetCurPersistentBufferIndex();
-
-		//DevMsg( " --> buff=%x, startOffset=%d, paramsOffset=%d, persistOffset = %d\n", this, m_nPersistentBufferStartOffset, pParams->m_nOffset, persistentBufferOffset );
+		else
+		{
+			// Fresh slice: DISCARD (frame-start reset or mid-frame wrap) or
+			// the first lock of the frame (capacity was verified above).
+			// Reserve the buffer's full size so every later append this frame
+			// lands inside the slice.  The revision bump re-issues the attrib
+			// pointers so the new base is used by the draws that follow.
+			pTempBuffer->Append( m_nSize );
+			m_nPersistentBufferStartOffset = pTempBuffer->GetOffset() - m_nSize;
+			m_nPersistentBufferSlot = m_pCtx->GetCurPersistentBufferIndex();
+			m_nRevision++;
+			resultPtr = static_cast<char*>(pTempBuffer->GetPtr()) + m_nPersistentBufferStartOffset + pParams->m_nOffset;
+			bUsingPersistentBuffer = true;
+		}
 	}
 	else if ( !g_bDisableStaticBuffer && ( pParams->m_bDiscard || pParams->m_bNoOverwrite ) && ( pParams->m_nSize <= GL_STATIC_BUFFER_SIZE ) )
 	{
@@ -988,8 +1010,17 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 			// if orphaned and bufmode is nonzero, flip it to dynamic.
 			
 			// We always want to call glBufferData( ..., NULL ) on discards, even though we're using the GL_MAP_INVALIDATE_BUFFER_BIT flag, because this flag is actually only a hint according to AMD.
-			GLenum hint = gl_bufmode.GetInt() ? GL_DYNAMIC_DRAW : GL_STREAM_DRAW;
-			gGL->glBufferData( m_buffGLTarget, m_nSize, (const GLvoid*)NULL, hint );
+			// On ARM/Mali (UMA) the orphan reallocates the shared dynamic VB
+			// (1.5MB) on every frame; the discard is usually satisfied cheaper
+			// by GL_MAP_INVALIDATE_BUFFER_BIT on the same storage (the flag is
+			// already set in the map below).  -gl_force_orphan restores the
+			// classic realloc behavior.
+			static bool s_bMali = ( gGL->m_nDriverProvider == cGLDriverProviderARM );
+			if ( !s_bMali || CommandLine()->CheckParm( "-gl_force_orphan" ) )
+			{
+				GLenum hint = gl_bufmode.GetInt() ? GL_DYNAMIC_DRAW : GL_STREAM_DRAW;
+				gGL->glBufferData( m_buffGLTarget, m_nSize, (const GLvoid*)NULL, hint );
+			}
 									
 			m_nRevision++;	// revision grows on orphan event
 		}
@@ -1203,12 +1234,17 @@ void CGLMBuffer::Unlock( int nActualSize, const void *pActualData )
 #endif
 	if ( m_bUsingPersistentBuffer )
 	{
-		if ( nActualSize )
+		// Make the written range visible to the GPU.  The mapping is
+		// persistent+coherent, but an explicit flush costs one driver call and
+		// covers drivers whose "coherent" mapping is not actually write-
+		// through - without it, stale GPU reads produced random-triangle
+		// flicker on Mali r13p0 even though the equivalent map path (which
+		// flushes explicitly) rendered cleanly.  The region itself was
+		// reserved at lock time, so no ring accounting happens here.
+		if ( nActualSize > 0 )
 		{
-			CPersistentBuffer *pTempBuffer = m_pCtx->GetCurPersistentBuffer( m_type );
-			pTempBuffer->Append( nActualSize );
-
-			//DevMsg( "   <-- actualSize=%d, persistOffset = %d\n", nActualSize, pTempBuffer->GetOffset() );
+			m_pCtx->BindBufferToCtx( m_type, this );
+			gGL->glFlushMappedBufferRange( m_buffGLTarget, m_nPersistentBufferStartOffset + m_LockParams.m_nOffset, nActualSize );
 		}
 	}
 	else if ( m_pStaticBuffer )
