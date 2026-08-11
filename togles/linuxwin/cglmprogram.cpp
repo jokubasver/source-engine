@@ -1221,7 +1221,10 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 			if(isLinked == GL_FALSE)
 			{
 				GLint maxLength = 0;
-				gGL->glGetShaderiv(m_program, GL_INFO_LOG_LENGTH, &maxLength);
+				// m_program is a PROGRAM handle: glGetShaderiv would raise
+				// GL_INVALID_VALUE here and the link-failure log would never
+				// be fetched.
+				gGL->glGetProgramiv(m_program, GL_INFO_LOG_LENGTH, &maxLength);
 
 				GLchar  log[4096];
 				gGL->glGetProgramInfoLog( m_program, sizeof(log), &maxLength, log );
