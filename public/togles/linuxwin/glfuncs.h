@@ -26,7 +26,6 @@
 
 GL_FUNC(OpenGL,true,GLenum,glGetError,(void),())
 GL_FUNC_VOID(OpenGL,true,glActiveTexture,(GLenum a),(a))
-GL_FUNC_VOID(OpenGL,true,glAlphaFunc,(GLenum a,GLclampf b),(a,b))
 GL_FUNC_VOID(OpenGL,true,glAttachShader,(GLuint a, GLuint b),(a,b))
 GL_FUNC_VOID(OpenGL,true,glBindAttribLocation,(GLuint a,GLuint b,const GLchar *c),(a,b,c))
 GL_FUNC_VOID(OpenGL,true,glBindBuffer,(GLenum a,GLuint b),(a,b))
@@ -96,7 +95,12 @@ GL_FUNC_VOID( GL_ARB_get_program_binary, false, glProgramBinary, (GLuint a,GLenu
 //GL_FUNC_VOID(OpenGL,true,glOrtho,(GLdouble a,GLdouble b,GLdouble c,GLdouble d,GLdouble e,GLdouble f),(a,b,c,d,e,f))
 GL_FUNC_VOID(OpenGL,true,glPixelStorei,(GLenum a,GLint b),(a,b))
 //GL_FUNC_VOID(OpenGL,true,glPolygonMode,(GLenum a,GLenum b),(a,b))
-GL_FUNC_VOID(OpenGL,true,glReadBuffer,(GLenum a),(a))
+// glReadBuffer is not core in OpenGL ES (GLES read source is implicit).  Some
+// GLES drivers export it anyway, so keep it under a dedicated capability flag:
+// if it is missing, only this flag clears instead of clobbering m_bHave_OpenGL
+// (which would abort startup with "Missing basic required OpenGL functionality").
+GL_EXT(GL_EXT_read_buffer,-1,-1)
+GL_FUNC_VOID(GL_EXT_read_buffer,false,glReadBuffer,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,true,glScissor,(GLint a,GLint b,GLsizei c,GLsizei d),(a,b,c,d))
 GL_FUNC_VOID(OpenGL,true,glShaderSource,(GLuint a,GLsizei b,const GLchar **c,const GLint *d),(a,b,c,d))
 GL_FUNC_VOID(OpenGL,true,glStencilFunc,(GLenum a,GLint b,GLuint c),(a,b,c))
@@ -117,7 +121,6 @@ GL_FUNC(OpenGL,true,GLboolean,glUnmapBuffer,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,true,glUseProgram,(GLuint a),(a))
 GL_FUNC_VOID(OpenGL,true,glVertexAttribPointer,(GLuint a,GLint b,GLenum c,GLboolean d,GLsizei e,const GLvoid *f),(a,b,c,d,e,f))
 GL_FUNC_VOID(OpenGL,true,glViewport,(GLint a,GLint b,GLsizei c,GLsizei d),(a,b,c,d))
-GL_FUNC_VOID(OpenGL,true,glClientActiveTexture,(GLenum a),(a))
 GL_FUNC_VOID(OpenGL,true,glStencilOpSeparate,(GLenum a,GLenum b,GLenum c,GLenum d),(a,b,c,d))
 GL_FUNC_VOID(OpenGL,true,glStencilFuncSeparate,(GLenum a,GLenum b,GLint c,GLuint d),(a,b,c,d))
 GL_FUNC_VOID(OpenGL,true,glGetTexLevelParameteriv,(GLenum a,GLint b,GLenum c,GLint *d),(a,b,c,d))
@@ -240,6 +243,11 @@ GL_EXT(GL_QCOM_alpha_test,-1,-1)
 
 
 GL_EXT(GL_EXT_texture_sRGB_decode,-1,-1)
+// GL_FRAMEBUFFER_SRGB enable (sRGB write toggling) is not core in OpenGL ES;
+// only drivers exposing GL_EXT_sRGB_write_control can honor it.  When absent,
+// m_hasGammaWrites must be false so the engine uses the shader-side fake-SRGB
+// path instead of issuing an invalid glEnable(GL_FRAMEBUFFER_SRGB_EXT).
+GL_EXT(GL_EXT_sRGB_write_control,-1,-1)
 GL_EXT(GL_EXT_discard_framebuffer,-1,-1)
 GL_FUNC_VOID(GL_EXT_discard_framebuffer,false,glDiscardFramebufferEXT,(GLenum a,GLsizei b,const GLenum *c),(a,b,c))
 GL_EXT(GL_EXT_multisampled_render_to_texture,-1,-1)
@@ -300,7 +308,6 @@ GL_FUNC_VOID(OpenGL,true,glPolygonOffset,(GLfloat a,GLfloat b),(a,b))
 GL_FUNC_VOID(OpenGL,true,glTexParameterfv,(GLenum a,GLenum b,const GLfloat *c),(a,b,c))
 GL_FUNC_VOID(OpenGL,true,glUniform1f,(GLint a,GLfloat b),(a,b))
 GL_FUNC_VOID(OpenGL,true,glUniform4fv,(GLint a,GLsizei b,const GLfloat *c),(a,b,c))
-GL_FUNC_VOID(OpenGL,true,glColor4f,(GLfloat a,GLfloat b,GLfloat c,GLfloat d),(a,b,c,d))
 GL_FUNC_VOID(OpenGL,true,glSamplerParameterf,(GLuint a, GLenum b, GLfloat c), (a, b, c))
 GL_FUNC_VOID(OpenGL,true,glSamplerParameterfv,(GLuint a, GLenum b, const GLfloat *c), (a, b, c))
 GL_FUNC_VOID(OpenGL,false,glAlphaFuncQCOM,(GLenum a, GLfloat b),(a,b))
