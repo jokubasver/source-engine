@@ -41,7 +41,19 @@ void GLMRendererInfo::Init( GLMRendererInfoFields *info )
         m_info.m_ati = true;
         m_info.m_atiNewer = true;
 
-        m_info.m_hasGammaWrites = true;
+#ifdef TOGLES
+	// GL_FRAMEBUFFER_SRGB is not core in OpenGL ES: the sRGB write encoding of
+	// sRGB attachments is always on and cannot be toggled.  Only drivers with
+	// GL_EXT_sRGB_write_control can honor D3DRS_SRGBWRITEENABLE.  When the
+	// extension is absent, report no gamma-write support so the engine uses the
+	// shader-side fake-SRGB path (FakeSRGBWrite) - WriteBlendEnableSRGB then
+	// shunts the state into m_FakeBlendEnableSRGB and the flush drives the
+	// flSRGBWrite uniform, instead of issuing an invalid
+	// glEnable(GL_FRAMEBUFFER_SRGB_EXT) every state change.
+	m_info.m_hasGammaWrites = gGL->m_bHave_GL_EXT_sRGB_write_control;
+#else
+	m_info.m_hasGammaWrites = true;
+#endif
 	m_info.m_cantAttachSRGB = false;
 
 	// Framebuffer fetch: GL_ARM_shader_framebuffer_fetch (Mali) or
