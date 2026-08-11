@@ -411,6 +411,7 @@ private:
 	bool m_bFullScreen;
 	bool m_SizeWindowFullScreenState; // fullscreen state when SizeWindow() was called.
 	bool m_bForbidMouseGrab;
+	bool m_bRequestSRGB;				// whether the GL context/backbuffer was created sRGB-capable
 
 	bool m_WindowShownAndRaised;
 
@@ -585,11 +586,21 @@ InitReturnVal_t CSDLMgr::Init()
 		}
 
 #if defined( TOGLES )
+		// libGLESv3.so is a compat-only name that many distros do not ship
+		// (the OpenGL ES 3.x ABI lives in libGLESv2.so).  Try the explicit
+		// names, then let SDL resolve its driver's default library.
 		if (SDL_GL_LoadLibrary("libGLESv3.so") == -1)
+		{
+			if (SDL_GL_LoadLibrary("libGLESv2.so") == -1)
+			{
+				if (SDL_GL_LoadLibrary(NULL) == -1)
+					Error( "SDL_GL_LoadLibrary failed: %s", SDL_GetError() );
+			}
+		}
 #else
 		if (SDL_GL_LoadLibrary(NULL) == -1)
-#endif
 			Error( "SDL_GL_LoadLibrary(NULL) failed: %s", SDL_GetError() );
+#endif
 #endif
 	}
 
@@ -601,6 +612,8 @@ InitReturnVal_t CSDLMgr::Init()
 	{
 		m_bForbidMouseGrab = false;
 	}
+
+	m_bRequestSRGB = false;
 
 	m_WindowShownAndRaised = false;
 
@@ -662,9 +675,16 @@ InitReturnVal_t CSDLMgr::Init()
 
 
 #ifdef TOGLES
+	// libGLESv3.so is a compat-only name many distros don't ship; the ES 3.x
+	// ABI lives in libGLESv2.so.  Fall back through the names before giving up.
 	l_egl = dlopen("libEGL.so", RTLD_LAZY);
+	if ( !l_egl )
+		l_egl = dlopen("libEGL.so.1", RTLD_LAZY);
 	l_gles = dlopen("libGLESv3.so", RTLD_LAZY);
+	if ( !l_gles )
+		l_gles = dlopen("libGLESv2.so", RTLD_LAZY);
 
+	_glGetProcAddress = NULL;
 	if( l_egl )
 	{
 		_glGetProcAddress = (t_glGetProcAddress)dlsym(l_egl, "eglGetProcAddress");
@@ -674,31 +694,46 @@ InitReturnVal_t CSDLMgr::Init()
 	SET_GL_ATTR(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 	SET_GL_ATTR(SDL_GL_CONTEXT_MINOR_VERSION, 2);
 
-	_eglInitialize = (t_eglInitialize)dlsym(l_egl, "eglInitialize");
-	_eglGetDisplay = (t_eglGetDisplay)dlsym(l_egl, "eglGetDisplay");
-	_eglQueryString = (t_eglQueryString)dlsym(l_egl, "eglQueryString");
+	_eglInitialize = NULL;
+	_eglGetDisplay = NULL;
+	_eglQueryString = NULL;
+	if( l_egl )
+	{
+		_eglInitialize = (t_eglInitialize)dlsym(l_egl, "eglInitialize");
+		_eglGetDisplay = (t_eglGetDisplay)dlsym(l_egl, "eglGetDisplay");
+		_eglQueryString = (t_eglQueryString)dlsym(l_egl, "eglQueryString");
+	}
 
-	bool bSRGBCapable = false;
+	// Default to requesting an sRGB-capable surface; only skip it when the
+	// probe positively proves the extension is absent (SDL's EGL backend
+	// hard-fails window creation when EGL_KHR_gl_colorspace is missing).
+	bool bSRGBCapable = true;
 	if( _eglInitialize && _eglGetDisplay && _eglQueryString )
 	{
 		EGLDisplay display = _eglGetDisplay(EGL_DEFAULT_DISPLAY);
-		if( display != EGL_NO_DISPLAY
-			&& _eglInitialize(display, NULL, NULL) != -1
-			&& strstr(_eglQueryString(display, EGL_EXTENSIONS) ,"EGL_KHR_gl_colorspace") )
-				bSRGBCapable = true;
+		if( display != EGL_NO_DISPLAY )
+		{
+			if( _eglInitialize(display, NULL, NULL) == EGL_TRUE )
+			{
+				// EGLBoolean is EGL_TRUE(1)/EGL_FALSE(0); also, eglQueryString
+				// returns NULL on a display that failed to initialize, so never
+				// pass its result to strstr unchecked.
+				const char *extensions = _eglQueryString(display, EGL_EXTENSIONS);
+				if( extensions )
+					bSRGBCapable = strstr(extensions, "EGL_KHR_gl_colorspace") != NULL;
+				// else: no extension string at all - treat as absent.
+			}
+			// else: probe failed.  Under kmsdrm, eglGetDisplay(EGL_DEFAULT_DISPLAY)
+			// often routes to the DRI2 platform and fails ("failed to create dri2
+			// screen") even though SDL's own GBM display supports the extension,
+			// so an inconclusive probe must NOT disable the request.  If the
+			// extension is genuinely absent, CreateHiddenGameWindow retries once
+			// without the sRGB attribute instead of aborting.
+		}
 	}
 
-	// Under kmsdrm, eglGetDisplay(EGL_DEFAULT_DISPLAY) often routes to the DRI2
-	// platform and fails ("failed to create dri2 screen"), so the query above
-	// never runs even though the real GBM/kmsdrm display supports
-	// EGL_KHR_gl_colorspace.  SDL's own kmsdrm backend uses
-	// eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, ...), a different path.
-	// Fall back to requesting an sRGB-capable window surface unconditionally:
-	// if the extension is absent, SDL/GL just yields a linear config (no error).
-	if( !bSRGBCapable )
-		bSRGBCapable = true;
-
-	if( bSRGBCapable )
+	m_bRequestSRGB = bSRGBCapable;
+	if( m_bRequestSRGB )
 		SET_GL_ATTR(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1)
 #elif ANDROID
 	bool m_bOGL = false;
@@ -725,7 +760,7 @@ InitReturnVal_t CSDLMgr::Init()
 	else
 	{
 		l_gl4es = dlopen("libgl4es.so", RTLD_LAZY);
-		_glGetProcAddress = (t_glGetProcAddress)dlsym(l_gl4es, "gl4es_glGetProcAddress");
+		_glGetProcAddress = l_gl4es ? (t_glGetProcAddress)dlsym(l_gl4es, "gl4es_glGetProcAddress") : NULL;
 	}
 #endif
 	SET_GL_ATTR(SDL_GL_RED_SIZE, 8);
@@ -896,6 +931,37 @@ bool CSDLMgr::CreateHiddenGameWindow( const char *pTitle, int width, int height 
 	flags |= SDL_WINDOW_OPENGL;
 #endif
 	m_Window = SDL_CreateWindow( pTitle, x, y, width, height, flags );
+
+#if defined( DX_TO_GL_ABSTRACTION )
+	if ( ( m_Window == NULL ) && m_bRequestSRGB )
+	{
+		// SDL's EGL backend refuses to create the surface when the sRGB-capable
+		// attribute is requested but EGL_KHR_gl_colorspace is absent.  Retry
+		// once with a plain (linear) surface instead of aborting startup.
+		Msg( "sRGB-capable window surface unavailable (%s); retrying without it.\n", SDL_GetError() );
+
+		// Drop the SDL_GL_FRAMEBUFFER_SRGB_CAPABLE attribute from the pixel
+		// format list so extra contexts / recreates stay consistent.
+		int nOut = 0;
+		for ( int i = 0; i < m_pixelFormatAttribCount; ++i )
+		{
+			if ( m_pixelFormatAttribs[ i * 2 ] == (int)SDL_GL_FRAMEBUFFER_SRGB_CAPABLE )
+				continue;
+			m_pixelFormatAttribs[ nOut * 2 ] = m_pixelFormatAttribs[ i * 2 ];
+			m_pixelFormatAttribs[ nOut * 2 + 1 ] = m_pixelFormatAttribs[ i * 2 + 1 ];
+			++nOut;
+		}
+		m_pixelFormatAttribCount = nOut;
+		m_bRequestSRGB = false;
+
+		// Re-apply the reduced attribute set, then retry window creation.
+		const int *attrib = m_pixelFormatAttribs;
+		for ( int i = 0; i < m_pixelFormatAttribCount; i++, attrib += 2 )
+			SDL_GL_SetAttribute( (SDL_GLattr)attrib[ 0 ], attrib[ 1 ] );
+
+		m_Window = SDL_CreateWindow( pTitle, x, y, width, height, flags );
+	}
+#endif
 
 	if (m_Window == NULL)
 		Error( "Failed to create SDL window: %s", SDL_GetError() );
@@ -1095,11 +1161,14 @@ int CSDLMgr::PeekAndRemoveKeyboardEvents( bool *pbEsc, bool *pbReturn, bool *pbS
 
 	int nRead = 0;
 	CUtlLinkedList<CCocoaEvent,int> &queue = debugEvent ? m_CocoaEvents : m_DebugEvents;
-	int nEvents = queue.Count();
 
-	for ( int iEvent=0; iEvent < nEvents; iEvent++ )
+	// CUtlLinkedList node indices are not contiguous 0..Count()-1: nodes are
+	// recycled from a free list, so live nodes can sit at any index (including
+	// >= Count()).  Iterate with Head()/Next() like GetEvents does, otherwise
+	// we scan stale freed-slot data (phantom keys) and miss real events.
+	for ( int iNode = queue.Head(); iNode != queue.InvalidIndex(); iNode = queue.Next( iNode ) )
 	{
-		CCocoaEvent *pEvent = &queue[ iEvent ];
+		CCocoaEvent *pEvent = &queue[ iNode ];
 
 		switch( pEvent->m_EventType )
 		{
@@ -1605,6 +1674,20 @@ void CSDLMgr::SetWindowFullScreen( bool bFullScreen, int nWidth, int nHeight )
 		SDL_SetWindowFullscreen( m_Window, bFullScreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0 );
 
 		m_bFullScreen = bFullScreen;
+
+		if ( bFullScreen )
+		{
+			// SDL_WINDOW_FULLSCREEN_DESKTOP resizes the window to the desktop
+			// dimensions, which can differ from the requested rendering size.
+			// The mouse-warp fallback logic works in window coordinates, so it
+			// must target the ACTUAL window center or the cursor can never
+			// reach part of the screen (and gets fought by the re-warp).
+			int actualWidth = 0, actualHeight = 0;
+			SDL_GetWindowSize( m_Window, &actualWidth, &actualHeight );
+			m_nMouseTargetX = actualWidth / 2;
+			m_nMouseTargetY = actualHeight / 2;
+			m_nWarpDelta = Max( actualHeight / 3, 200 );
+		}
 	}
 }
 
