@@ -277,18 +277,20 @@ void	CGLMFBO::TexDetach( EGLMFBOAttachment attachIndex, GLenum fboBindPoint )
 					}
 
 					gGL->glBindRenderbuffer( GL_RENDERBUFFER, 0 );
-						
+					
 					if (attachIndexGL==GL_DEPTH_STENCIL_ATTACHMENT)
 					{
 						// detach the GL_RENDERBUFFER target at depth and stencil attach points
-						gGL->glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);						
+						// (target the bind point this FBO is actually bound to; GL_FRAMEBUFFER
+						// is invalid on ES when the read and draw framebuffers differ)
+						gGL->glFramebufferRenderbuffer( fboBindPoint, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);						
 							
-						gGL->glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+						gGL->glFramebufferRenderbuffer( fboBindPoint, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
 					}
 					else
 					{
 						// color attachment (likely 0)
-						gGL->glFramebufferRenderbuffer( GL_FRAMEBUFFER, attachIndexGL, GL_RENDERBUFFER, 0);
+						gGL->glFramebufferRenderbuffer( fboBindPoint, attachIndexGL, GL_RENDERBUFFER, 0);
 					}
 				}
 				else
