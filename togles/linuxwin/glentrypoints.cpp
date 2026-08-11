@@ -345,6 +345,29 @@ static bool CheckOpenGLExtension(const char *ext, const int coremajor, const int
 extern bool g_bUsePseudoBufs;
 extern bool g_bDisableStaticBuffer;
 
+// Bind a scratch texture to the given target and ask the driver whether it
+// accepts GL_TEXTURE_BASE_LEVEL / GL_TEXTURE_MAX_LEVEL.  Several mobile GLES
+// drivers reject these core-pname calls with GL_INVALID_ENUM anyway (observed
+// on Mali-G31 r13p0), so the capability is probed instead of inferred from the
+// reported context version.
+static bool ProbeTexLevelClamp( COpenGLEntryPoints *pGL, GLenum target, GLuint nProbeTex, GLuint nPrevBind )
+{
+	pGL->glBindTexture( target, nProbeTex );
+
+	// Discard any errors left over from earlier startup calls so they cannot
+	// be misattributed to this probe.
+	while ( pGL->glGetError() != GL_NO_ERROR )
+	{
+	}
+
+	pGL->glTexParameteri( target, GL_TEXTURE_MAX_LEVEL, 0 );
+	pGL->glTexParameteri( target, GL_TEXTURE_BASE_LEVEL, 0 );
+	const bool bOK = ( pGL->glGetError() == GL_NO_ERROR );
+
+	pGL->glBindTexture( target, nPrevBind );
+	return bOK;
+}
+
 // The GL context you want entry points for must be current when you hit this constructor!
 COpenGLEntryPoints::COpenGLEntryPoints()
 	: m_nTotalGLCycles(0)
@@ -392,6 +415,31 @@ COpenGLEntryPoints::COpenGLEntryPoints()
 
 	Msg( "GL_RENDERER=\"%s\" GL_VERSION=\"%s\" GL_VENDOR=\"%s\" (%d.%d.%d)\n", m_pGLDriverStrings[ cGLRendererString ], m_pGLDriverStrings[ cGLVersionString ], m_pGLDriverStrings[ cGLVendorString ],
 		m_nOpenGLVersionMajor, m_nOpenGLVersionMinor, m_nOpenGLVersionPatch );
+
+	// GL_TEXTURE_BASE_LEVEL / GL_TEXTURE_MAX_LEVEL are core in desktop GL
+	// (1.2+) and GLES 3.0+.  GLES 2.0 only has them via GL_APPLE_texture_max_level.
+	// Version checks are NOT enough, though: some mobile GLES drivers reject
+	// the pnames with GL_INVALID_ENUM even in an ES 3.2 context, so probe each
+	// texture target the renderer uses.  When a target fails, WriteTexels skips
+	// the texture-object cap and the flush applies a sampler-side
+	// GL_TEXTURE_MAX_LOD clamp instead (see FlushDrawStates).
+	//
+	// One texture object per target: a texture object's target is fixed at its
+	// first bind, so re-binding a single object to 2D then 3D then CUBE would
+	// fail and could steer the pname calls onto whatever texture was previously
+	// bound to that target.
+	GLuint nProbeTex[3] = { 0, 0, 0 };
+	GLint nPrevBind2D = 0, nPrevBind3D = 0, nPrevBindCube = 0;
+	glGetIntegerv( GL_TEXTURE_BINDING_2D, &nPrevBind2D );
+	glGetIntegerv( GL_TEXTURE_BINDING_3D, &nPrevBind3D );
+	glGetIntegerv( GL_TEXTURE_BINDING_CUBE_MAP, &nPrevBindCube );
+	glGenTextures( 3, nProbeTex );
+
+	m_bHaveCoreTexLevelClamp2D = ProbeTexLevelClamp( this, GL_TEXTURE_2D, nProbeTex[0], (GLuint)nPrevBind2D );
+	m_bHaveCoreTexLevelClamp3D = ProbeTexLevelClamp( this, GL_TEXTURE_3D, nProbeTex[1], (GLuint)nPrevBind3D );
+	m_bHaveCoreTexLevelClampCube = ProbeTexLevelClamp( this, GL_TEXTURE_CUBE_MAP, nProbeTex[2], (GLuint)nPrevBindCube );
+
+	glDeleteTextures( 3, nProbeTex );
 
 	Msg("GL_EXTENSIONS=\"%s\"\n", m_pGLDriverStrings[cGLExtensionsString]);
 
