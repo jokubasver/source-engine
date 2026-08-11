@@ -1059,8 +1059,12 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		glScrubFBO			( GL_DRAW_FRAMEBUFFER );
 		glAttachTex2DtoFBO	( GL_DRAW_FRAMEBUFFER, formatClass, srcTex->m_texName, 0 );
 
-		// set read and draw buffers appropriately		
-		gGL->glReadBuffer( glAttachFromClass[formatClass] );
+		// set read and draw buffers appropriately
+		// glReadBuffer is not core in OpenGL ES; on ES the FBO read source is
+		// implicitly the first color attachment, so this is a no-op there.
+		// Guard the call for strict drivers that do not export the symbol.
+		if ( gGL->glReadBuffer )
+			gGL->glReadBuffer( glAttachFromClass[formatClass] );
 		gGL->glDrawBuffers( 1, &glAttachFromClass[formatClass] );
 		
 		// blit#1 - to resolve to scratch
@@ -1116,7 +1120,11 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		}
 #endif
 
-		gGL->glReadBuffer( glAttachFromClass[formatClass] );
+		// glReadBuffer is not core in OpenGL ES; on ES the FBO read source is
+		// implicitly the first color attachment, so this is a no-op there.
+		// Guard the call for strict drivers that do not export the symbol.
+		if ( gGL->glReadBuffer )
+			gGL->glReadBuffer( glAttachFromClass[formatClass] );
 	}
 	
 	//----------------------------------------------------------------- zero or one blits may have happened above, whichever took place, FBO1 is now on read
@@ -1769,6 +1777,7 @@ void GLMContext::PreloadTex( CGLMTex *tex, bool force )
 #ifndef OSX // 10.6
 	if ( m_bUseSamplerObjects )
 	{
+		m_nBoundSamplerObject[15] = 0;
 		gGL->glBindSampler( 15, 0 );
 	}
 #endif // !OSX
@@ -2208,12 +2217,31 @@ void GLMContext::BeginFrame( void )
 	}
 
 	// scrub some critical shock absorbers
+	// Only disable the attrib arrays that are actually enabled: the driver
+	// validates every glDisableVertexAttribArray call, and 16 unconditional
+	// calls per frame are measurable on the weak in-order cores paired with
+	// Mali-G31-class GPUs.  The mask is maintained by the flush's enable/
+	// disable bookkeeping, so it is always accurate at TOF.
+	uint nScrubMask = m_lastKnownVertexAttribMask;
 	for( int i=0; i< 16; i++)
 	{
-		gGL->glDisableVertexAttribArray( i );						// enable GLSL attribute- this is just client state - will be turned back off
+		if ( nScrubMask & ( 1u << i ) )
+		{
+			gGL->glDisableVertexAttribArray( i );						// enable GLSL attribute- this is just client state - will be turned back off
+		}
 	}
 	m_lastKnownVertexAttribMask = 0;
 	m_nNumSetVertexAttributes = 0;
+
+	// The scrub above disabled every enabled attrib array in the real GL
+	// context, but the flush's attrib setup only re-issues when m_CurAttribs
+	// disagrees with the device's current state.  If the first draw of this
+	// frame uses the exact same vertex input state (same shader, decl, streams
+	// and buffer revisions) as the last draw of the previous frame, the flush
+	// would skip the re-enable branch and the draw would run with NO attrib
+	// arrays enabled.  Invalidate the cached revisions so the first flush
+	// always re-issues the attrib setup.
+	ClearCurAttribs();
 	
 	//FIXME should we also zap the m_lastKnownAttribs array ? (worst case it just sets them all again on first batch)
 
@@ -2303,8 +2331,27 @@ void GLMContext::AdvancePersistentBuffer( void )
 		if ( gPersistentBufferSize[lpType] == 0 )
 			continue;
 
-		// Insert fence on the buffer we just finished writing to this frame
-		m_persistentBuffer[m_nCurPersistentBuffer][lpType].InsertFence();
+		// Only fence buffers that were actually written this frame.  Inserting
+		// a GL_SYNC_GPU_COMMANDS_COMPLETE fence for an idle ring forces the
+		// driver to flush the whole command stream at EndFrame, and the
+		// matching glClientWaitSync on the other end stalls the render thread -
+		// pure waste when no draw referenced the persistent path.
+		if ( m_persistentBuffer[m_nCurPersistentBuffer][lpType].GetOffset() > 0 )
+		{
+			m_persistentBuffer[m_nCurPersistentBuffer][lpType].InsertFence();
+		}
+
+		// Also (re-)fence the previous slot if it still holds data: draws in
+		// THIS frame may have referenced it (a buffer locked last frame and
+		// drawn again without re-lock - GetHandle binds the lock-time slot).
+		// Refreshing the fence makes the BlockUntilNotBusy below - which runs
+		// when the ring returns to that slot - wait for everything that ever
+		// referenced it, instead of only the frame that wrote it.
+		const uint nPrevSlot = ( m_nCurPersistentBuffer + cNumPersistentBuffers - 1 ) % cNumPersistentBuffers;
+		if ( nPrevSlot != m_nCurPersistentBuffer && m_persistentBuffer[nPrevSlot][lpType].GetOffset() > 0 )
+		{
+			m_persistentBuffer[nPrevSlot][lpType].InsertFence();
+		}
 	}
 
 	// Advance to next buffer in the ring
@@ -2315,8 +2362,8 @@ void GLMContext::AdvancePersistentBuffer( void )
 		if ( gPersistentBufferSize[lpType] == 0 )
 			continue;
 
-		// Block until the GPU is done with the buffer we're about to reuse,
-		// and reset its offset to 0 for fresh appending next frame
+		// BlockUntilNotBusy no-ops when no fence was inserted for this buffer
+		// (i.e. it was idle the last time the ring passed through it).
 		m_persistentBuffer[m_nCurPersistentBuffer][lpType].BlockUntilNotBusy();
 	}
 }
@@ -2775,17 +2822,28 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 #ifndef OSX
 	if ( m_bUseSamplerObjects )
 	{
-		memset( m_samplerObjectHash, 0, sizeof( m_samplerObjectHash ) );
+		m_samplerObjectHash = new SamplerHashEntry[cSamplerObjectHashSize];
+		memset( m_samplerObjectHash, 0, sizeof( SamplerHashEntry ) * cSamplerObjectHashSize );
+		m_nSamplerObjectHashSize = cSamplerObjectHashSize;
 		m_nSamplerObjectHashNumEntries = 0;
-	
+		m_nSamplerObjectHashEvictCursor = 0;
+
 		for ( uint i = 0; i < cSamplerObjectHashSize; ++i )
 		{
 			gGL->glGenSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
 		}
 	}
+	else
 #endif // !OSX
+	{
+		m_samplerObjectHash = NULL;
+		m_nSamplerObjectHashSize = cSamplerObjectHashSize;
+		m_nSamplerObjectHashNumEntries = 0;
+		m_nSamplerObjectHashEvictCursor = 0;
+	}
 
 	memset( m_samplers, 0, sizeof( m_samplers ) );
+	memset( m_nBoundSamplerObject, 0, sizeof( m_nBoundSamplerObject ) );
 	for( int i=0; i< GLM_SAMPLER_COUNT; i++)
 	{
 		GLMTexSamplingParams &params = m_samplers[i].m_samp;
@@ -3081,6 +3139,22 @@ GLMContext::~GLMContext	()
 		m_nReadTexelsFBO = 0;
 	}
 
+#ifndef OSX
+	if ( m_samplerObjectHash )
+	{
+		for ( uint i = 0; i < m_nSamplerObjectHashSize; ++i )
+		{
+			if ( m_samplerObjectHash[i].m_samplerObject )
+			{
+				gGL->glDeleteSamplers( 1, &m_samplerObjectHash[i].m_samplerObject );
+				m_samplerObjectHash[i].m_samplerObject = 0;
+			}
+		}
+		delete[] m_samplerObjectHash;
+		m_samplerObjectHash = NULL;
+	}
+#endif
+
 	PurgeTexCache();
 
 	DecrementWindowRefCount();
@@ -3261,7 +3335,7 @@ void GLMContext::CleanupTex( GLenum texBind, GLMTexLayout* pLayout, GLuint tex )
 		return;
 
 	const GLuint oldPBO = m_nBoundGLBuffer[ kGLMPixelBuffer ];
-	const GLuint oldTex = ( m_samplers[ m_activeTexture ].m_pBoundTex != NULL ) ? m_samplers[ m_activeTexture ].m_pBoundTex->GetTexName() : 0;
+	const GLuint oldTex = ( m_activeTexture >= 0 ) && m_samplers[ m_activeTexture ].m_pBoundTex ? m_samplers[ m_activeTexture ].m_pBoundTex->GetTexName() : 0;
 
 	gGL->glBindBuffer( GL_PIXEL_UNPACK_BUFFER, m_destroyPBO );
 	gGL->glBindTexture( texBind, tex );
@@ -3395,6 +3469,114 @@ void GLMContext::InvalidateSamplersForTex( CGLMTex *pTex )
 			SetSamplerDirty( i );
 		}
 	}
+}
+
+void GLMContext::GrowSamplerObjectHash()
+{
+	Assert( m_samplerObjectHash );
+	Assert( m_nSamplerObjectHashSize < cMaxSamplerObjectHashSize );
+
+	const uint nOldSize = m_nSamplerObjectHashSize;
+	const uint nNewSize = nOldSize * 2;
+	const uint nHashMask = nNewSize - 1;
+
+	SamplerHashEntry *pNewTable = new SamplerHashEntry[nNewSize];
+	memset( pNewTable, 0, sizeof( SamplerHashEntry ) * nNewSize );
+	for ( uint i = 0; i < nNewSize; ++i )
+	{
+		gGL->glGenSamplers( 1, &pNewTable[i].m_samplerObject );
+	}
+
+	// Re-insert the live entries; keys must re-probe into their new slots.
+	// Tombstone and empty slots stay empty in the new table.  The fresh
+	// sampler objects generated for slots that receive a carried-over live
+	// entry are never used - delete them so growth does not leak one GL
+	// sampler object per live entry.
+	for ( uint i = 0; i < nOldSize; ++i )
+	{
+		const GLMTexSamplingParams &params = m_samplerObjectHash[i].m_params;
+		if ( !params.m_packed.m_isValid )
+			continue;
+
+		uint32 lodBits;
+		memcpy( &lodBits, &params.m_lodBias, sizeof(lodBits) );
+		uint h = bitmix32( params.m_bits + params.m_borderColor + bitmix32(lodBits) ) & nHashMask;
+		while ( pNewTable[h].m_params.m_packed.m_isValid )
+		{
+			if ( ++h > nHashMask )
+				h = 0;
+		}
+
+		if ( pNewTable[h].m_samplerObject )
+		{
+			gGL->glDeleteSamplers( 1, &pNewTable[h].m_samplerObject );
+		}
+		pNewTable[h].m_params = params;
+		pNewTable[h].m_samplerObject = m_samplerObjectHash[i].m_samplerObject;
+	}
+
+	delete[] m_samplerObjectHash;
+	m_samplerObjectHash = pNewTable;
+	m_nSamplerObjectHashSize = nNewSize;
+}
+
+void GLMContext::EvictSamplerObjectHashEntry()
+{
+	Assert( m_samplerObjectHash );
+	Assert( m_nSamplerObjectHashNumEntries > 0 );
+
+	const uint nSize = m_nSamplerObjectHashSize;
+
+	// Scan from the round-robin cursor for a live entry whose sampler object
+	// is NOT currently bound to any texture unit.  Deleting a bound sampler
+	// object silently reverts that unit to the texture's default sampler state
+	// for the rest of the frame (the flush's dirty flags have already been
+	// consumed), so bound entries are never evicted.  At most GLM_SAMPLER_COUNT
+	// entries can be bound at once, so the scan always finds a victim.
+	for ( uint nScan = 0; nScan < nSize; ++nScan )
+	{
+		const uint victim = ( m_nSamplerObjectHashEvictCursor + nScan ) % nSize;
+
+		if ( !m_samplerObjectHash[victim].m_params.m_packed.m_isValid )
+			continue;
+
+		bool bBound = false;
+		for ( uint i = 0; i < GLM_SAMPLER_COUNT; ++i )
+		{
+			if ( m_nBoundSamplerObject[i] == m_samplerObjectHash[victim].m_samplerObject )
+			{
+				bBound = true;
+				break;
+			}
+		}
+		if ( bBound )
+			continue;
+
+		if ( m_samplerObjectHash[victim].m_samplerObject )
+		{
+			gGL->glDeleteSamplers( 1, &m_samplerObjectHash[victim].m_samplerObject );
+			m_samplerObjectHash[victim].m_samplerObject = 0;
+		}
+
+		// Mark the slot as a tombstone instead of a plain empty slot: probes
+		// walk PAST tombstones, so no probe-chain hole is created and lookups
+		// of keys that hash earlier in the chain still find their entries (no
+		// duplicate inserts, no orphaned sampler objects).
+		m_samplerObjectHash[victim].m_params.m_packed.m_isValid = false;
+		m_samplerObjectHash[victim].m_params.m_packed.m_tombstone = true;
+		--m_nSamplerObjectHashNumEntries;
+		m_nSamplerObjectHashEvictCursor = ( victim + 1 ) % nSize;
+		return;
+	}
+
+	// Every live entry is currently bound (only possible when the table is
+	// smaller than GLM_SAMPLER_COUNT).  Reuse the cursor slot without deleting
+	// its object; the next insert reconfigures it in place.
+	const uint victim = m_nSamplerObjectHashEvictCursor;
+	m_nSamplerObjectHashEvictCursor = ( victim + 1 ) % nSize;
+	m_samplerObjectHash[victim].m_params.m_packed.m_isValid = false;
+	m_samplerObjectHash[victim].m_params.m_packed.m_tombstone = true;
+	--m_nSamplerObjectHashNumEntries;
 }
 
 void GLMContext::FlushDrawStatesNoShaders( )
@@ -5049,7 +5231,11 @@ void GLMContext::DrawDebugText( float x, float y, float z, float drawCharWidth, 
 
 	SetVertexAttributes( &vertSetup );
 
-	gGL->glDrawArrays( GL_QUADS, 0, stringlen * 4 );
+	// GL_QUADS is not valid in OpenGL ES.  Each glyph is laid out as 4
+	// consecutive vertices, which a GL_TRIANGLE_STRIP turns into the same
+	// quad (this is GLMDEBUG-only diagnostics text).
+	for ( int nGlyph = 0; nGlyph < stringlen; ++nGlyph )
+		gGL->glDrawArrays( GL_TRIANGLE_STRIP, nGlyph * 4, 4 );
 
 	SetVertexAttributes( NULL );
 

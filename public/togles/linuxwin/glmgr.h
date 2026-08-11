@@ -1650,6 +1650,8 @@ class GLMContext
 		void DrawDebugText( float x, float y, float z, float drawCharWidth, float drawCharHeight, char *string );
 
 		CPersistentBuffer* GetCurPersistentBuffer( EGLMBufferType type ) { return &( m_persistentBuffer[m_nCurPersistentBuffer][type] ); }
+		uint GetCurPersistentBufferIndex() { return m_nCurPersistentBuffer; }
+		CPersistentBuffer* GetPersistentBuffer( uint nSlot, EGLMBufferType type ) { return &( m_persistentBuffer[nSlot][type] ); }
 
 		// members------------------------------------------
 						
@@ -1745,10 +1747,29 @@ class GLMContext
 
 		enum 
 		{ 
-			cSamplerObjectHashBits = 9, cSamplerObjectHashSize = 1 << cSamplerObjectHashBits 
+			cSamplerObjectHashBits = 9, cSamplerObjectHashSize = 1 << cSamplerObjectHashBits,
+			cMaxSamplerObjectHashBits = 12, cMaxSamplerObjectHashSize = 1 << cMaxSamplerObjectHashBits 
 		};
-		SamplerHashEntry				m_samplerObjectHash[cSamplerObjectHashSize];
+		// The table is heap-allocated and grows on demand.  Entries are never
+		// freed on their own - the GL sampler objects are shared, cheap state -
+		// but once the table hits cMaxSamplerObjectHashSize the oldest entries
+		// are evicted (and their sampler objects deleted) so a pathological
+		// stream of distinct sampling states can neither leak forever nor spin
+		// the old fixed-size linear probe.
+		SamplerHashEntry				*m_samplerObjectHash;
+		uint							m_nSamplerObjectHashSize;	// power of two
 		uint							m_nSamplerObjectHashNumEntries;
+		uint							m_nSamplerObjectHashEvictCursor;	// round-robin victim for eviction at the cap
+
+		// Which sampler object is currently bound to each texture unit (GLES
+		// has no glGetSamplerBinding query for this in core ES 2.0/3.x).  The
+		// flush updates it on every glBindSampler; eviction uses it to avoid
+		// deleting a sampler object that is still bound to a unit (which would
+		// silently revert that unit to the texture's default sampler state).
+		GLuint							m_nBoundSamplerObject[GLM_SAMPLER_COUNT];
+
+		void GrowSamplerObjectHash();
+		void EvictSamplerObjectHashEntry();
 					
 		// texture lock tracking - CGLMTex objects share usage of this
 		CUtlVector< GLMTexLockDesc >	m_texLocks;
