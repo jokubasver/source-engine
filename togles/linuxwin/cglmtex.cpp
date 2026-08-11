@@ -1301,7 +1301,20 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 
 		if( readOnly )
 		{
-			data = (GLubyte*)(m_backing + m_layout->m_slices[ desc->m_sliceIndex ].m_storageOffset);	// this would change for PBO
+			GLMTexLayoutSlice *pSlice = &m_layout->m_slices[ desc->m_sliceIndex ];
+			if ( m_backing )
+			{
+				data = (GLubyte*)( m_backing + pSlice->m_storageOffset );	// this would change for PBO
+			}
+			else
+			{
+				// No host copy exists (e.g. a readback of a texture without
+				// backing storage).  Allocate scratch storage, read into it,
+				// and let Unlock free it (tracked on the lock descriptor) -
+				// writing into NULL + offset would crash.
+				data = (GLubyte*)malloc( pSlice->m_storageSize );
+				desc->m_pReadbackBuffer = data;
+			}
 			//int sliceSize = m_layout->m_slices[ desc->m_sliceIndex ].m_storageSize;
 
 			// interestingly enough, we can use the same path for both 2D and 3D fetch
@@ -3459,6 +3472,37 @@ void convert_texture( GLenum &internalformat, GLsizei width, GLsizei height, GLe
 // TexSubImage should work properly on every driver stack and GPU--enabling by default.
 ConVar	gl_enabletexsubimage( "gl_enabletexsubimage", "1" );
 
+// Set GL_TEXTURE_MAX_LEVEL / GL_TEXTURE_BASE_LEVEL on the texture object.
+// Returns true when the driver accepted it.  On failure the target is latched
+// off permanently (DisableCoreTexLevelClamp) so the renderer falls back to the
+// sampler-side GL_TEXTURE_MAX_LOD clamp and never issues the call again.
+//
+// The error check must not use a bare glGetError() right after the call:
+// glGetError returns the OLDEST pending error, which may have been generated
+// by an earlier unrelated call, so stale errors are drained first.  Otherwise
+// a single foreign error would be misattributed to this call and spam the log
+// on every subsequent texture write.
+static bool GLMSetTexLevelClamp( GLenum target, GLenum pname, GLint value, GLMContext *pCtx, CGLMTex *pTex )
+{
+	while ( gGL->glGetError() != GL_NO_ERROR )
+	{
+	}
+
+	gGL->glTexParameteri( target, pname, value );
+	const GLenum err = gGL->glGetError();
+	if ( err == GL_NO_ERROR )
+		return true;
+
+	gGL->DisableCoreTexLevelClamp( target );
+	if ( pCtx && pTex )
+		pCtx->InvalidateSamplersForTex( pTex );
+
+#if defined(_DEBUG) || defined(GLMDEBUG)
+	GLMDebugPrintf( "WriteTexels: glTexParameteri(level-clamp pname 0x%X=%d) failed with 0x%X; texture-object level clamp disabled for target 0x%X\n", pname, value, err, target );
+#endif
+	return false;
+}
+
 void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDataWrite )
 {
 	//if ( m_nBindlessHashNumEntries )
@@ -3551,22 +3595,18 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 	{
 		m_maxActiveMip = desc->m_req.m_mip;
 
-		// GL_TEXTURE_MAX_LEVEL and GL_TEXTURE_BASE_LEVEL are not core GLES pnames - they require
-		// GL_APPLE_texture_max_level. On GLES drivers without that extension (e.g. Mali-G31 r13p0),
-		// the texture-object trim would fail with GL_INVALID_ENUM (0x500), so gate the call. The
-		// coarse cap is instead supplied via the sampler-side GL_TEXTURE_MAX_LOD computed at flush
-		// time (see FlushDrawStates). Mark bound samplers dirty so the new effective MAX_LOD actually
-		// gets re-emitted on the next draw.
-		if ( gGL->m_bHave_GL_APPLE_texture_max_level )
+		// GL_TEXTURE_MAX_LEVEL is core in desktop GL and GLES 3.0+ (on GLES 2.0
+		// it requires GL_APPLE_texture_max_level), but some mobile GLES drivers
+		// reject the pname with GL_INVALID_ENUM anyway (Mali-G31 r13p0) - the
+		// per-target capability was probed at startup (HaveCoreTexLevelClamp).
+		// On targets that accept it, set the cap on the texture object; on the
+		// others the coarse cap is supplied via the sampler-side
+		// GL_TEXTURE_MAX_LOD computed at flush time (see FlushDrawStates).
+		// Mark bound samplers dirty so the new effective MAX_LOD actually
+		// gets re-emitted on the next draw in the fallback case.
+		if ( gGL->HaveCoreTexLevelClamp( target ) )
 		{
-			gGL->glTexParameteri( target, GL_TEXTURE_MAX_LEVEL, desc->m_req.m_mip);
-#if defined(_DEBUG) || defined(GLMDEBUG)
-			{
-				GLenum err = gGL->glGetError();
-				if (err != GL_NO_ERROR)
-					GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_MAX_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
-			}
-#endif
+			GLMSetTexLevelClamp( target, GL_TEXTURE_MAX_LEVEL, desc->m_req.m_mip, m_ctx, this );
 		}
 		else
 		{
@@ -3578,16 +3618,9 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 	{
 		m_minActiveMip = desc->m_req.m_mip;
 
-		if ( gGL->m_bHave_GL_APPLE_texture_max_level )
+		if ( gGL->HaveCoreTexLevelClamp( target ) )
 		{
-			gGL->glTexParameteri( target, GL_TEXTURE_BASE_LEVEL, desc->m_req.m_mip);
-#if defined(_DEBUG) || defined(GLMDEBUG)
-			{
-				GLenum err = gGL->glGetError();
-				if (err != GL_NO_ERROR)
-					GLMDebugPrintf("WriteTexels: glTexParameteri(GL_TEXTURE_BASE_LEVEL=%d) failed with 0x%X\n", desc->m_req.m_mip, err);
-			}
-#endif
+			GLMSetTexLevelClamp( target, GL_TEXTURE_BASE_LEVEL, desc->m_req.m_mip, m_ctx, this );
 		}
 	}
 
@@ -3610,9 +3643,9 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 				// transfer RG's to RGB's
 				while(expandSize>0)
 				{
-					*dst = *src++;	// move first byte
-					*dst = *src++;	// move second byte
-					*reinterpret_cast<uint8*>(dst) = 0xBB;	// pad third byte
+					*dst++ = *src++;	// move first byte
+					*dst++ = *src++;	// move second byte
+					*dst++ = 0xBB;		// pad third byte
 					
 					expandSize -= 3;
 				}
@@ -3628,6 +3661,31 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 			default:	Assert(!"Don't know how to expand that format..");
 		}
 		
+	}
+
+	// GL treats the upload data pointer as a client address only while no
+	// buffer is bound to GL_PIXEL_UNPACK_BUFFER.  Dynamic textures keep their
+	// PBO bound through WriteTexels (the caller unbinds it afterwards), so:
+	//  - when the source is the mapped PBO region (sliceAddress == m_mapped),
+	//    the pointer must be passed as a byte offset into the PBO (0 - each
+	//    lock maps its slice at PBO offset 0);
+	//  - when the source is a separate client buffer (e.g. the V8U8 expansion
+	//    temp above), the PBO must be unbound for the duration of the upload.
+	// Without this, the first upload of a dynamic texture (kSliceValid == 0
+	// forces the glTexImage* path) passed a host address as a PBO byte offset
+	// -> GL_INVALID_OPERATION and a failed upload (garbage/black slice until
+	// the next lock takes the subimage path).
+	bool bUploadPBOBound = ( m_mapped != NULL );
+	void *uploadData = noDataWrite ? NULL : sliceAddress;
+	if ( bUploadPBOBound )
+	{
+		if ( sliceAddress == m_mapped )
+			uploadData = 0;
+		else
+		{
+			gGL->glBindBuffer( GL_PIXEL_UNPACK_BUFFER, 0 );
+			bUploadPBOBound = false;
+		}
 	}
 
 	// set up the client storage now, one way or another
@@ -3648,7 +3706,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 				Assert( writeWholeSlice );	//subimage not implemented in this path yet
 				// compressed path
 				// http://www.opengl.org/sdk/docs/man/xhtml/glCompressedTexImage2D
-					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, slice->m_storageSize, sliceAddress );
+					gGL->glCompressedTexImage2D( target, desc->m_req.m_mip, intformat, slice->m_xSize, slice->m_ySize, 0, slice->m_storageSize, uploadData );
 			}
 			else
 			{
@@ -3691,7 +3749,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 										writeBox.ymax - writeBox.ymin,	// height	(was slice->m_ySize)
 										glDataFormat,					// format
 										glDataType,						// type
-										0
+										uploadData						// byte offset into the bound PBO, or client ptr if the PBO was unbound (V8U8 expansion)
 										);
 					}
 				}
@@ -3699,7 +3757,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 				{					
 					// uncompressed path
 					// http://www.opengl.org/documentation/specs/man_pages/hardcopy/GL/html/gl/teximage2d.html
-					convert_texture(intformat, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, glDataFormat, glDataType, noDataWrite ? NULL : sliceAddress);
+					convert_texture(intformat, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, glDataFormat, glDataType, bUploadPBOBound ? NULL : uploadData);
 					
 					gGL->glTexImage2D(			target,						// target
 											desc->m_req.m_mip,			// level
@@ -3709,7 +3767,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 											0,							// border
 											glDataFormat,				// dataformat
 											glDataType,					// datatype
-											noDataWrite ? NULL : sliceAddress );	// data (optionally suppressed in case ResetSRGB desires)
+											uploadData );				// data (byte offset into the bound PBO, or client pointer)
 
 					if (m_layout->m_key.m_texFlags & kGLMTexMultisampled)
 					{
@@ -3742,11 +3800,11 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 										slice->m_zSize,				// depth
 										0,							// border
 										slice->m_storageSize,		// imageSize
-										sliceAddress );				// data
+										uploadData );				// data (byte offset into the bound PBO, or client pointer)
 			}
 			else
 			{
-				convert_texture(intformat, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, glDataFormat, glDataType, noDataWrite ? NULL : sliceAddress);				
+				convert_texture(intformat, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, glDataFormat, glDataType, bUploadPBOBound ? NULL : uploadData);				
 				gGL->glTexImage3D(			target,						// target
 										desc->m_req.m_mip,			// level
 										intformat,					// internalformat
@@ -3756,7 +3814,7 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 										0,							// border
 										glDataFormat,				// dataformat
 										glDataType,					// datatype
-										noDataWrite ? NULL : sliceAddress );	// data (optionally suppressed in case ResetSRGB desires)
+										uploadData );				// data (byte offset into the bound PBO, or client pointer)
 			}
 		}
 		break;
@@ -3788,16 +3846,25 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		// earlier m_ctx->BindTexToTMU( this, 0 ) at the top of WriteTexels already handles this,
 		// but other paths into WriteTexels may have re-bound textures since, so re-bind defensively.
 		m_ctx->BindTexToTMU( this, 0 );
+
+		// Relax the level clamp before generating: the base-mip upload above capped
+		// GL_TEXTURE_MAX_LEVEL at 0, and glGenerateMipmap may respect that cap on
+		// some drivers, which would regenerate nothing and leave the upper mips
+		// sampling stale tile-buffer contents.
+		if ( gGL->HaveCoreTexLevelClamp( m_layout->m_key.m_texGLTarget ) && m_layout->m_mipCount > 1 )
+		{
+			GLMSetTexLevelClamp( m_layout->m_key.m_texGLTarget, GL_TEXTURE_MAX_LEVEL, m_layout->m_mipCount - 1, m_ctx, this );
+		}
 		gGL->glGenerateMipmap( m_layout->m_key.m_texGLTarget );
 
 		int fullMipCount = m_layout->m_mipCount;
 		if ( fullMipCount > 1 && (int)m_maxActiveMip < fullMipCount - 1 )
 		{
 			m_maxActiveMip = fullMipCount - 1;
-			// Don't issue GL_TEXTURE_MAX_LEVEL (it's GL_APPLE_texture_max_level on GLES - absent on
-			// Mali-G31); the flush-time MAX_LOD cap will pick up the relaxed m_maxActiveMip on the
-			// next draw via the sampler-object invalidation done below.
-			if ( !gGL->m_bHave_GL_APPLE_texture_max_level )
+			// On targets without the texture-object level cap the flush-time
+			// MAX_LOD cap picks up the relaxed m_maxActiveMip on the next draw
+			// via the sampler-object invalidation done below.
+			if ( !gGL->HaveCoreTexLevelClamp( m_layout->m_key.m_texGLTarget ) )
 			{
 				m_ctx->InvalidateSamplersForTex( this );
 			}
@@ -3942,6 +4009,7 @@ void CGLMTex::Lock( GLMTexLockParams *params, char** addressOut, int* yStrideOut
 	desc->m_active = true;
 	desc->m_sliceIndex = sliceIndex;
 	desc->m_sliceBaseOffset = m_layout->m_slices[sliceIndex].m_storageOffset;
+	desc->m_pReadbackBuffer = NULL;
 
 	// to calculate the additional offset we need to look at the rect's min corner
 	// combined with the per-texel size and Y/Z stride
@@ -4044,6 +4112,24 @@ void CGLMTex::Unlock( GLMTexLockParams *params )
 				if (desc->m_active)
 				{
 					GLMStop();
+				}
+
+				// Release any scratch readback storage allocated by ReadTexels
+				// (readonly locks on textures without a host copy).
+				if ( desc->m_pReadbackBuffer )
+				{
+					free( desc->m_pReadbackBuffer );
+					desc->m_pReadbackBuffer = NULL;
+				}
+
+				// Read-only locks carry no new texel data (the slice storage
+				// was copied OUT of the texture), so there is nothing to
+				// upload - and for dynamic textures there is no backing store
+				// to upload FROM, so skipping avoids uploading stale PBO data.
+				if ( desc->m_req.m_readonly )
+				{
+					m_ctx->m_texLocks.FastRemove( j );
+					continue;
 				}
 				
 				// write the texels

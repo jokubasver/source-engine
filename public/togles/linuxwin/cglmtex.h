@@ -218,6 +218,9 @@ struct GLMTexLockDesc
 	int					m_sliceIndex;			// which slice in the layout
 	int					m_sliceBaseOffset;		// where is that in the texture data
 	int					m_sliceRegionOffset;	// offset to the start (lowest address corner) of the region requested
+
+	void				*m_pReadbackBuffer;		// scratch malloc'd readback storage for readonly locks on
+												// textures without a host copy (NULL when unused); freed at unlock
 };
 
 //===============================================================================
@@ -263,6 +266,7 @@ struct GLMTexPackedSamplingParams
 	uint32 m_compareMode	: GLM_PACKED_SAMPLER_PARAMS_COMPARE_MODE_BITS;
 	uint32 m_srgb			: GLM_PACKED_SAMPLER_PARAMS_SRGB_BITS;
 	uint32 m_isValid		: 1;
+	uint32 m_tombstone		: 1;	// open-addressing tombstone: slot was evicted; probes skip past it but inserts may reuse it
 };
 
 struct GLMTexSamplingParams
