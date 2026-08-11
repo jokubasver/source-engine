@@ -2178,8 +2178,11 @@ static	ConVar gl_gpu_timing ("gl_gpu_timing", "0");
 
 static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
 {
-	2 * 1024 * 1024,	// kGLMVertexBuffer
-	1 * 1024 * 1024,	// kGLMIndexBuffer
+	// Sized to hold the engine's shared dynamic buffers (1.5MB vertex, see
+	// imesh.h) plus mid-frame wrap slices with headroom; the ring advances one
+	// slot per frame, so each slot must fit a whole frame's worth of slices.
+	8 * 1024 * 1024,	// kGLMVertexBuffer
+	4 * 1024 * 1024,	// kGLMIndexBuffer
 	0,					// kGLMUniformBuffer
 	0,					// kGLMPixelBuffer
 };
@@ -2222,31 +2225,43 @@ void GLMContext::BeginFrame( void )
 	// calls per frame are measurable on the weak in-order cores paired with
 	// Mali-G31-class GPUs.  The mask is maintained by the flush's enable/
 	// disable bookkeeping, so it is always accurate at TOF.
-	uint nScrubMask = m_lastKnownVertexAttribMask;
-	for( int i=0; i< 16; i++)
+	//
+	// On ARM (Mali) the whole scrub is skipped: nothing outside FlushDrawStates
+	// touches attrib arrays or vertex/index buffer bindings between frames
+	// (PreloadTex early-returns on ARM, ForceFlushStates has no live callers),
+	// so the attrib state and the m_boundVertexAttribs mirror stay valid across
+	// frames.  The first draw of a frame then reuses the previous frame's
+	// attrib setup instead of re-issuing every pointer and enable.  The flush's
+	// own bookkeeping (m_lastKnownVertexAttribMask / m_nNumSetVertexAttributes)
+	// remains self-consistent: the disable loop in FlushDrawStates covers a new
+	// first-draw shader that uses fewer attribs.  Non-ARM keeps the scrub so
+	// external GL work (e.g. desktop preloads) cannot desync the mirrors.
+	if ( gGL->m_nDriverProvider != cGLDriverProviderARM )
 	{
-		if ( nScrubMask & ( 1u << i ) )
+		uint nScrubMask = m_lastKnownVertexAttribMask;
+		for( int i=0; i< 16; i++)
 		{
-			gGL->glDisableVertexAttribArray( i );						// enable GLSL attribute- this is just client state - will be turned back off
+			if ( nScrubMask & ( 1u << i ) )
+			{
+				gGL->glDisableVertexAttribArray( i );						// enable GLSL attribute- this is just client state - will be turned back off
+			}
 		}
+		m_lastKnownVertexAttribMask = 0;
+		m_nNumSetVertexAttributes = 0;
+
+		// The scrub above disabled every enabled attrib array in the real GL
+		// context, but the flush's attrib setup only re-issues when m_CurAttribs
+		// disagrees with the device's current state.  If the first draw of this
+		// frame uses the exact same vertex input state (same shader, decl, streams
+		// and buffer revisions) as the last draw of the previous frame, the flush
+		// would skip the re-enable branch and the draw would run with NO attrib
+		// arrays enabled.  Invalidate the cached revisions so the first flush
+		// always re-issues the attrib setup.
+		ClearCurAttribs();
+
+		BindBufferToCtx( kGLMVertexBuffer, NULL, true );
+		BindBufferToCtx( kGLMIndexBuffer, NULL, true );
 	}
-	m_lastKnownVertexAttribMask = 0;
-	m_nNumSetVertexAttributes = 0;
-
-	// The scrub above disabled every enabled attrib array in the real GL
-	// context, but the flush's attrib setup only re-issues when m_CurAttribs
-	// disagrees with the device's current state.  If the first draw of this
-	// frame uses the exact same vertex input state (same shader, decl, streams
-	// and buffer revisions) as the last draw of the previous frame, the flush
-	// would skip the re-enable branch and the draw would run with NO attrib
-	// arrays enabled.  Invalidate the cached revisions so the first flush
-	// always re-issues the attrib setup.
-	ClearCurAttribs();
-	
-	//FIXME should we also zap the m_lastKnownAttribs array ? (worst case it just sets them all again on first batch)
-
-	BindBufferToCtx( kGLMVertexBuffer, NULL, true );
-	BindBufferToCtx( kGLMIndexBuffer, NULL, true );
 
 	if (gl_flushpaircache.GetInt())
 	{
@@ -2336,21 +2351,20 @@ void GLMContext::AdvancePersistentBuffer( void )
 		// driver to flush the whole command stream at EndFrame, and the
 		// matching glClientWaitSync on the other end stalls the render thread -
 		// pure waste when no draw referenced the persistent path.
-		if ( m_persistentBuffer[m_nCurPersistentBuffer][lpType].GetOffset() > 0 )
+		//
+		// Fence every slot that still holds data, not just the current one:
+		// draws in THIS frame may reference older slots (a buffer locked in a
+		// previous frame and drawn again without re-lock - GetHandle binds the
+		// lock-time slot).  Refreshing the fence each frame makes the
+		// BlockUntilNotBusy below - which runs when the ring returns to that
+		// slot - wait for every draw that ever referenced it, including the
+		// ones submitted since the previous refresh.
+		for ( uint nSlot = 0; nSlot < cNumPersistentBuffers; ++nSlot )
 		{
-			m_persistentBuffer[m_nCurPersistentBuffer][lpType].InsertFence();
-		}
-
-		// Also (re-)fence the previous slot if it still holds data: draws in
-		// THIS frame may have referenced it (a buffer locked last frame and
-		// drawn again without re-lock - GetHandle binds the lock-time slot).
-		// Refreshing the fence makes the BlockUntilNotBusy below - which runs
-		// when the ring returns to that slot - wait for everything that ever
-		// referenced it, instead of only the frame that wrote it.
-		const uint nPrevSlot = ( m_nCurPersistentBuffer + cNumPersistentBuffers - 1 ) % cNumPersistentBuffers;
-		if ( nPrevSlot != m_nCurPersistentBuffer && m_persistentBuffer[nPrevSlot][lpType].GetOffset() > 0 )
-		{
-			m_persistentBuffer[nPrevSlot][lpType].InsertFence();
+			if ( m_persistentBuffer[nSlot][lpType].GetOffset() > 0 )
+			{
+				m_persistentBuffer[nSlot][lpType].InsertFence();
+			}
 		}
 	}
 
@@ -2530,9 +2544,9 @@ void GLMContext::Present( CGLMTex *tex )
 		BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER );
 
 		// put em back !!
-		m_ScissorEnable.Flush();	
-		m_ScissorBox.Flush();
-		m_ViewportBox.Flush();		
+		m_ScissorEnable.FlushDirty();	
+		m_ScissorBox.FlushDirty();
+		m_ViewportBox.FlushDirty();		
 	}
 
 	m_nCurFrame++;
