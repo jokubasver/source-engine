@@ -85,7 +85,7 @@ public:
 
 	void Append( uint nSize );
 
-	inline uint GetBytesRemaining() const { return m_nSize - m_nOffset; }
+	inline uint GetBytesRemaining() const { return ( m_nOffset >= m_nSize ) ? 0 : m_nSize - m_nOffset; }
 	inline uint GetOffset() const { return m_nOffset; }
 	inline void *GetPtr() const { return m_pImmutablePersistentBuf; }
 	inline GLuint GetHandle() const { return m_nHandle; }
@@ -231,9 +231,12 @@ public:
 
 	uint					m_nPersistentBufferStartOffset;
 	bool					m_bUsingPersistentBuffer;
+	uint					m_nPersistentBufferSlot;	// ring slot index the persistent data was appended to at lock time
 	
 	bool					m_bPseudo;				// true if the m_name is 0, and the backing is plain RAM
-			
+
+	uint					m_nPseudoLockOffset;	// last pseudo-buffer lock offset; used to detect address-moving NOOVERWRITE locks
+
 	// in pseudo mode, there is just one RAM buffer that acts as the backing.
 	// expectation is that this mode would only be used for dynamic indices.
 	// since indices have to be consumed (copied to command stream) prior to return from a drawing call,

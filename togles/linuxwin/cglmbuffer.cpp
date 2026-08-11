@@ -254,7 +254,14 @@ void CPersistentBuffer::BlockUntilNotBusy()
 #ifdef HAVE_GL_ARB_SYNC
 	if (m_nSyncObj)
 	{
-		gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 3000000000000ULL );
+		// 1s is generous for a 2-3 frame ring on any part we target; if this
+		// ever fires the GPU is wedged or the ring was sized too small.  The
+		// old 3s timeout just hid the stall.
+		GLenum result = gGL->glClientWaitSync( m_nSyncObj, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
+		if ( result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED )
+		{
+			Warning( "CPersistentBuffer: glClientWaitSync timed out (0x%X)\n", (int)result );
+		}
 
 		gGL->glDeleteSync( m_nSyncObj );
 
@@ -560,22 +567,27 @@ CGLMBuffer::CGLMBuffer( GLMContext *pCtx, EGLMBufferType type, uint size, uint o
 	m_pActualPseudoBuf = NULL;
 
 	m_bPseudo = false;
+	m_nPseudoLockOffset = 0xFFFFFFFF;
+	m_nPersistentBufferSlot = 0;
 		
 #if GL_ENABLE_UNLOCK_BUFFER_OVERWRITE_DETECTION
 	m_bPseudo = true;
 #endif
 
-	// Pseudo-buffers are the known-correct and faster default on this Mali
-	// target. The shared persistent ring is not safe for Source's interleaved
-	// NOOVERWRITE lock patterns: moving one logical buffer's base can orphan
-	// ranges that later draws still reference.
+	// Client-memory pseudo buffers have no GPU-side storage: on GLES the driver
+	// must re-copy the referenced vertex/index ranges on every draw (client-side
+	// vertex arrays are undefined in ES 3.x and only tolerated via a slow legacy
+	// path on Mali).  Real VBOs with map/orphan keep dynamic data resident on the
+	// GPU and are strictly faster on Mali-G31-class parts.  Pseudo buffers remain
+	// available for debugging via -gl_enable_pseudobufs.
 	if( V_stristr(gGL->m_pGLDriverStrings[cGLVendorString], "arm") != NULL )
 	{
-		if ( CommandLine()->CheckParm( "-gl_enable_pseudobufs" ) )
-			g_bUsePseudoBufs = true;
-		else
-			g_bUsePseudoBufs = !CommandLine()->CheckParm( "-gl_disable_pseudobufs" );
+		g_bUsePseudoBufs = CommandLine()->CheckParm( "-gl_enable_pseudobufs" ) != NULL;
 
+		// The static-buffer path glBufferSubData's into the same VBO every
+		// frame without orphaning, forcing a CPU/GPU serialization per lock -
+		// measured at a 5x FPS drop on Mali-G31.  Keep it hard-disabled on
+		// ARM even if -gl_enable_static_buffer is passed.
 		g_bDisableStaticBuffer = true;
 	}
 
@@ -837,9 +849,15 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 	
 	if ( m_bPseudo )
 	{
-		if ( pParams->m_bDiscard )
+		// The attrib-pointer cache (SetBufAndVertexAttribPointer) keys on the
+		// client pointer, which moves with the lock offset.  A NOOVERWRITE lock
+		// at a different offset would otherwise leave the previous draw's
+		// cached pointer stale (the flush's total-revision check never sees a
+		// change), so bump the revision whenever the lock address moves.
+		if ( pParams->m_bDiscard || ( pParams->m_nOffset != m_nPseudoLockOffset ) )
 		{
 			m_nRevision++;
+			m_nPseudoLockOffset = pParams->m_nOffset;
 		}
 
 		// async map modes are a no-op
@@ -906,6 +924,12 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 
 		resultPtr = static_cast<char*>(pTempBuffer->GetPtr()) + persistentBufferOffset;
 		bUsingPersistentBuffer = true;
+
+		// Remember which ring slot the data landed in.  GetHandle() must bind
+		// THAT slot's buffer (not the current one) so a draw in a later frame
+		// that reuses the locked data (legal D3D9 usage) still references the
+		// slot that holds it.
+		m_nPersistentBufferSlot = m_pCtx->GetCurPersistentBufferIndex();
 
 		//DevMsg( " --> buff=%x, startOffset=%d, paramsOffset=%d, persistOffset = %d\n", this, m_nPersistentBufferStartOffset, pParams->m_nOffset, persistentBufferOffset );
 	}
@@ -1295,5 +1319,11 @@ void CGLMBuffer::Unlock( int nActualSize, const void *pActualData )
 
 GLuint CGLMBuffer::GetHandle() const
 { 
-	return ( m_bUsingPersistentBuffer ? m_pCtx->GetCurPersistentBuffer( m_type )->GetHandle() : m_nHandle ); 
+	// The data was appended to the ring slot that was current at lock time;
+	// bind that slot's buffer so later-frame draws of the locked data (which
+	// D3D9 permits until the buffer is re-locked) read the right memory.  The
+	// slot stays resident until the ring wraps back to it two frames later.
+	if ( m_bUsingPersistentBuffer )
+		return m_pCtx->GetPersistentBuffer( m_nPersistentBufferSlot, m_type )->GetHandle();
+	return m_nHandle; 
 }
