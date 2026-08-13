@@ -3386,7 +3386,27 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		// through the pc uniform array stay highp via the explicit uniform
 		// declaration, so eye-position-driven specular keeps its precision
 		// at the cost of a promote-to-highp on those ops only.
-		const char *pFragPrecision = ( CommandLine()->FindParm( "-gl_mediump_ps" ) != 0 ) ? "mediump" : "highp";
+		//
+		// Mediump is the default on ARM (no measurable quality difference in
+		// testing); -gl_force_highp_ps restores the classic FP32 default.
+		static bool s_bCheckedFragPrecisionMode = false;
+		static bool s_bARMDefaultMediump = false;
+		if ( !s_bCheckedFragPrecisionMode )
+		{
+			s_bARMDefaultMediump = gGL && ( gGL->m_nDriverProvider == cGLDriverProviderARM );
+			s_bCheckedFragPrecisionMode = true;
+		}
+		const bool bUseMediump = ( CommandLine()->FindParm( "-gl_mediump_ps" ) != 0 )
+			|| ( s_bARMDefaultMediump && ( CommandLine()->FindParm( "-gl_force_highp_ps" ) == 0 ) );
+		const char *pFragPrecision = bUseMediump ? "mediump" : "highp";
+
+		static bool s_bReportedFragPrecision = false;
+		if ( !s_bReportedFragPrecision )
+		{
+			Msg( "GL fragment shader precision: %s\n", pFragPrecision );
+			s_bReportedFragPrecision = true;
+		}
+
 		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision %s float;\n#define varying in\n\n%s", fbfExtText, pFragPrecision, glslExtText );
 		m_bVertexShader = false;
 	}
