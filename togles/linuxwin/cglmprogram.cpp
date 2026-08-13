@@ -104,6 +104,8 @@ CGLMProgram::CGLMProgram( GLMContext *ctx, EGLMProgramType type )
 	m_type		= type;
 	m_nHashTag	= rand() ^ ( rand() << 15 );
 	m_text		= NULL;	// no text yet
+	m_bSourceHashValid = false;
+	memset( &m_sourceHash, 0, sizeof( m_sourceHash ) );
 	
 #if GLMDEBUG
 	m_editable	= NULL;
@@ -194,6 +196,7 @@ void	CGLMProgram::SetProgramText( char *text )
 		free( m_text );
 		m_text = NULL;
 	}
+	m_bSourceHashValid = false;
 	
 	// scrub desc text references
 	for( int i=0; i<kGLMNumProgramTypes; i++)
@@ -284,6 +287,12 @@ void	CGLMProgram::SetProgramText( char *text )
 			sscanf( lineStr, "// trans#%d label:ps-file %s ps-index %d ps-combo %d", &scratch, m_labelName, &m_labelIndex, &m_labelCombo );
 		}
 	}
+
+	// Snapshot the GLSL source hash now, while the text is resident.  The
+	// program-binary cache keys on this, and the text itself is freed after
+	// compile (GLM_FREE_SHADER_TEXT), so it may not be available later.
+	MD5_ProcessSingleBuffer( m_text + desc->m_textOffset, desc->m_textLength, m_sourceHash );
+	m_bSourceHashValid = true;
 }
 
 void	CGLMProgram::CompileActiveSources	( void )
@@ -370,8 +379,10 @@ void	CGLMProgram::Compile( EGLMProgramLang lang )
 				Msg("Shader %d source is:\n===============\n%s\nn===============\n", glslDesc->m_object.glsl, section);											
 			}
 
-#if 0 //GLM_FREE_SHADER_TEXT
-			// Free the shader program text - not needed anymore (GL has its own copy)
+#if GLM_FREE_SHADER_TEXT
+			// Free the shader program text - not needed anymore (GL has its own copy).
+			// The program-binary cache key was snapshotted into m_sourceHash by
+			// SetProgramText, so nothing later needs m_text in release builds.
 			if ( m_text && !m_descs[kGLMARB].m_textPresent )
 			{
 				free( m_text );
@@ -829,24 +840,6 @@ bool CGLMShaderPair::ValidateProgramPair()
 			if (m_locVertexInteger0 >= 0)
 				m_bHasBoolOrIntUniforms = true;
 
-			for (uint i = 0; i < cMaxVertexShaderBoolUniforms; i++)
-			{
-				char buf[256];
-				V_snprintf( buf, sizeof(buf), "b%d", i );
-				m_locVertexBool[i] = gGL->glGetUniformLocation( m_program, buf );
-				if (m_locVertexBool[i] != -1)
-					m_bHasBoolOrIntUniforms = true;
-			}
-
-			for (uint i = 0; i < cMaxFragmentShaderBoolUniforms; i++)
-			{
-				char buf[256];
-				V_snprintf( buf, sizeof(buf), "fb%d", i );
-				m_locFragmentBool[i] = gGL->glGetUniformLocation( m_program, buf );
-				if (m_locFragmentBool[i] != -1)
-					m_bHasBoolOrIntUniforms = true;
-			}
-
 			m_locFragmentParams = gGL->glGetUniformLocation( m_program, "pc" );
 
 			// No per-element location queries: for a uniform array the elements
@@ -854,21 +847,65 @@ bool CGLMShaderPair::ValidateProgramPair()
 			// vc[i]/pc[i] as m_locVertexParams/m_locFragmentParams + i. This
 			// removes ~256 glGetUniformLocation driver round-trips per program,
 			// which dominated the startup precache (267 pairs x ~500 calls).
-			m_NumUniformBufferParams[0] = m_NumUniformBufferParams[1] = 0;
 
 			m_locFragmentFakeSRGBEnable = gGL->glGetUniformLocation( m_program, "flSRGBWrite" );
 			m_fakeSRGBEnableValue = -1.0f;
 
-			for (int sampler = 0; sampler < 16; sampler++)
-			{
-				char tmp[16];
-				sprintf( tmp, "sampler%d", sampler );	// sampler0 .. sampler1.. etc
+			// Enumerate the active uniforms once and only query locations for
+			// the bool banks and samplers that actually exist.  The previous
+			// code issued 32 + 16 individual glGetUniformLocation calls (each
+			// a driver-side name lookup) per program on the first draw of a
+			// new combo; the enumeration collapses that into one round-trip
+			// plus a query per found name.  On a weak A35 this is a
+			// measurable part of the new-shader-combo stall.
+			memset( m_locVertexBool, 0xFF, sizeof( m_locVertexBool ) );
+			memset( m_locFragmentBool, 0xFF, sizeof( m_locFragmentBool ) );
+			memset( m_locSamplers, 0xFF, sizeof( m_locSamplers ) );
 
-				GLint nLoc = gGL->glGetUniformLocation( m_program, tmp );
-				m_locSamplers[sampler] = nLoc;
-				if (nLoc >= 0)
+			GLint nActiveUniforms = 0;
+			gGL->glGetProgramiv( m_program, GL_ACTIVE_UNIFORMS, &nActiveUniforms );
+			char szUniformName[1025];
+			for ( GLint nUniform = 0; nUniform < nActiveUniforms; ++nUniform )
+			{
+				GLsizei nNameLen = 0;
+				GLint nSize = 0;
+				GLenum nType = 0;
+				gGL->glGetActiveUniform( m_program, nUniform, sizeof( szUniformName ), &nNameLen, &nSize, &nType, szUniformName );
+				if ( nNameLen >= (GLsizei)sizeof( szUniformName ) )
+					nNameLen = sizeof( szUniformName ) - 1;
+				szUniformName[nNameLen] = 0;
+
+				if ( nNameLen > 2 && szUniformName[0] == 'b' && szUniformName[1] >= '0' && szUniformName[1] <= '9' )
 				{
-					gGL->glUniform1i( nLoc, sampler );
+					const int nIndex = atoi( szUniformName + 1 );
+					if ( nIndex >= 0 && nIndex < (int)cMaxVertexShaderBoolUniforms )
+					{
+						m_locVertexBool[nIndex] = gGL->glGetUniformLocation( m_program, szUniformName );
+						if ( m_locVertexBool[nIndex] != -1 )
+							m_bHasBoolOrIntUniforms = true;
+					}
+				}
+				else if ( nNameLen > 3 && szUniformName[0] == 'f' && szUniformName[1] == 'b' && szUniformName[2] >= '0' && szUniformName[2] <= '9' )
+				{
+					const int nIndex = atoi( szUniformName + 2 );
+					if ( nIndex >= 0 && nIndex < (int)cMaxFragmentShaderBoolUniforms )
+					{
+						m_locFragmentBool[nIndex] = gGL->glGetUniformLocation( m_program, szUniformName );
+						if ( m_locFragmentBool[nIndex] != -1 )
+							m_bHasBoolOrIntUniforms = true;
+					}
+				}
+				else if ( nNameLen > 7 && V_strncmp( szUniformName, "sampler", 7 ) == 0 && szUniformName[7] >= '0' && szUniformName[7] <= '9' )
+				{
+					const int nSampler = atoi( szUniformName + 7 );
+					if ( nSampler >= 0 && nSampler < 16 )
+					{
+						m_locSamplers[nSampler] = gGL->glGetUniformLocation( m_program, szUniformName );
+						if ( m_locSamplers[nSampler] >= 0 )
+						{
+							gGL->glUniform1i( m_locSamplers[nSampler], nSampler );
+						}
+					}
 				}
 			}
 		}
@@ -967,15 +1004,25 @@ static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, MD5Value_t 
 	MD5Update( &ctx, (const unsigned char *)versionStr,  (unsigned int)V_strlen( versionStr ) );
 	MD5Update( &ctx, (const unsigned char *)rendererStr, (unsigned int)V_strlen( rendererStr ) );
 
-	// Hash the actual GLSL source text of both shaders (offset+length into m_text).
+	// Hash the GLSL source of both shaders.  Each program snapshots its own
+	// source hash in SetProgramText (the text itself is freed after compile),
+	// so fold the per-program MD5s into the pair key.  Fall back to hashing
+	// the raw text if the snapshot is missing for some reason.
 	for ( int pass = 0; pass < 2; ++pass )
 	{
 		CGLMProgram *p = (pass == 0) ? vp : fp;
-		if ( !p || !p->m_text )
+		if ( !p )
 			continue;
-		GLMShaderDesc *desc = &p->m_descs[kGLMGLSL];
-		const char *section = p->m_text + desc->m_textOffset;
-		MD5Update( &ctx, (const unsigned char *)section, (unsigned int)desc->m_textLength );
+		if ( p->m_bSourceHashValid )
+		{
+			MD5Update( &ctx, p->m_sourceHash.bits, MD5_DIGEST_LENGTH );
+		}
+		else if ( p->m_text )
+		{
+			GLMShaderDesc *desc = &p->m_descs[kGLMGLSL];
+			const char *section = p->m_text + desc->m_textOffset;
+			MD5Update( &ctx, (const unsigned char *)section, (unsigned int)desc->m_textLength );
+		}
 	}
 
 	MD5Final( outHash.bits, &ctx );
@@ -1226,13 +1273,19 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 				// be fetched.
 				gGL->glGetProgramiv(m_program, GL_INFO_LOG_LENGTH, &maxLength);
 
-				GLchar  log[4096];
-				gGL->glGetProgramInfoLog( m_program, sizeof(log), &maxLength, log );
-				if( maxLength )
-				{
-					Msg("vp: \n%s\nfp: \n%s\n", vp->m_text, fp->m_text );
-					Msg("shader %d link log: %s\n", m_program, log);
-				}
+			GLchar  log[4096];
+			gGL->glGetProgramInfoLog( m_program, sizeof(log), &maxLength, log );
+			if( maxLength )
+			{
+#if GLM_FREE_SHADER_TEXT
+				// m_text may have been freed after compile; the names are the
+				// useful identifier here.
+				Msg("vp: %s\nfp: %s\n", vp->m_shaderName, fp->m_shaderName );
+#else
+				Msg("vp: \n%s\nfp: \n%s\n", vp->m_text, fp->m_text );
+#endif
+				Msg("shader %d link log: %s\n", m_program, log);
+			}
 			}
 			else
 			{

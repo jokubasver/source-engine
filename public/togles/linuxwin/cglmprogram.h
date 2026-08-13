@@ -32,6 +32,7 @@
 
 #include <sys/stat.h>
 #include <string.h>
+#include "tier1/checksum_md5.h"
 
 #pragma once
 
@@ -170,6 +171,13 @@ public:
 	
 	char					*m_text;				// copy of text passed into constructor.  Can change if editable shaders is enabled.
 													// note - it can contain multiple flavors, so use CGLMTextSectioner to scan it and locate them
+
+	// MD5 of the GLSL source section (m_text + m_textOffset .. +m_textLength).
+	// Computed in SetProgramText; lets the program-binary cache key survive
+	// the GLM_FREE_SHADER_TEXT free of m_text after compile (the source hash
+	// is all the cache needs).
+	MD5Value_t				m_sourceHash;
+	bool					m_bSourceHashValid;
 #if GLMDEBUG
 	CGLMEditableTextItem	*m_editable;			// editable text item for debugging
 #endif	
@@ -285,9 +293,6 @@ public:
 			
 	// fragment stage uniforms
 	GLint					m_locFragmentParams;			// "pc" per dx9asmtogl2 convention
-	
-	int						m_NumUniformBufferParams[kGLMNumProgramTypes];
-	GLint					m_UniformBufferParams[kGLMNumProgramTypes][256];
 	
 	GLint					m_locFragmentFakeSRGBEnable;	// "flSRGBWrite" - set to 1.0 to effect sRGB encoding on output
 	float					m_fakeSRGBEnableValue;			// shadow to avoid redundant sets of the m_locFragmentFakeSRGBEnable uniform
