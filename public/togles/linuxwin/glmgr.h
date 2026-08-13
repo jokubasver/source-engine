@@ -1533,6 +1533,13 @@ class GLMContext
 
 		FORCEINLINE void SetMaxUsedVertexShaderConstantsHint( uint nMaxConstants );
 		FORCEINLINE ThreadId_t GetCurrentOwnerThreadId() const { return m_nCurOwnerThreadId; }
+
+		// Scratch slab pool for texture locks.  CGLMTex::Lock/Unlock used to
+		// malloc+free a full-mip-chain backing buffer per lock cycle (client
+		// storage is off on Mali), churning the heap on every streaming /
+		// procedural texture update.  These recycle the slabs instead.
+		char *AcquireTexScratch( uint nSize );
+		void ReleaseTexScratch( char *pPtr, uint nSize );
 								
 	protected:
 		friend class GLMgr;				// only GLMgr can make GLMContext objects
@@ -1594,6 +1601,7 @@ class GLMContext
 		{
 			uint m_nTotalBufferRevision;
 			uint m_nVertexInputRevision;
+			uint m_nUsedStreamsMask;	// bitmask of streams referenced by the current decl+shader, captured at the last full attrib pass
 		};
 
 		CurAttribs_t m_CurAttribs;
@@ -1602,6 +1610,7 @@ class GLMContext
 		{ 
 			m_CurAttribs.m_nTotalBufferRevision = 0;
 			m_CurAttribs.m_nVertexInputRevision = 0xFFFFFFFF;
+			m_CurAttribs.m_nUsedStreamsMask = 0;
 		}
 		
 		FORCEINLINE void ReleasedShader() {	NullProgram(); }
@@ -1747,7 +1756,7 @@ class GLMContext
 
 		enum 
 		{ 
-			cSamplerObjectHashBits = 9, cSamplerObjectHashSize = 1 << cSamplerObjectHashBits,
+			cSamplerObjectHashBits = 10, cSamplerObjectHashSize = 1 << cSamplerObjectHashBits,
 			cMaxSamplerObjectHashBits = 12, cMaxSamplerObjectHashSize = 1 << cMaxSamplerObjectHashBits 
 		};
 		// The table is heap-allocated and grows on demand.  Entries are never
@@ -1906,6 +1915,14 @@ class GLMContext
 
 		GLuint							m_destroyPBO;
 		CUtlVector< TextureEntry_t >	m_availableTextures;
+
+		struct TexScratchSlab_t
+		{
+			char *m_pPtr;
+			uint m_nSize;
+		};
+		CUtlVector< TexScratchSlab_t >	m_texScratchPool;
+		uint							m_texScratchPoolBytes;
 
 		enum { cNumPersistentBuffers = 3 };
 		CPersistentBuffer	m_persistentBuffer[cNumPersistentBuffers][kGLMNumBufferTypes];

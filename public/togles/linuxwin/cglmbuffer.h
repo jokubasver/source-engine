@@ -83,12 +83,26 @@ public:
 	void InsertFence();
 	void BlockUntilNotBusy();
 
+	// Unmap+remap the whole persistent mapping.  Diagnostic (-gl_persistent_unmap_publish):
+	// some drivers only publish mapped writes at glUnmapBuffer; cycling the
+	// mapping forces that path.  Legal for persistent mappings - the returned
+	// CPU pointer may change and Lock re-derives slice pointers each time.
+	void Remap();
+
 	void Append( uint nSize );
 
 	inline uint GetBytesRemaining() const { return ( m_nOffset >= m_nSize ) ? 0 : m_nSize - m_nOffset; }
 	inline uint GetOffset() const { return m_nOffset; }
 	inline void *GetPtr() const { return m_pImmutablePersistentBuf; }
 	inline GLuint GetHandle() const { return m_nHandle; }
+
+	// Set when any draw binds this slot's buffer since the last fence
+	// refresh.  AdvancePersistentBuffer only re-fences referenced slots:
+	// an idle slot's fence already covers every draw that used it, and
+	// re-fencing idle slots every frame just forces glFenceSync/
+	// glDeleteSync churn and a command-stream flush at EndFrame.
+	inline void MarkReferenced() { m_bReferencedSinceFence = true; }
+	inline bool TakeReferencedSinceFence() { bool b = m_bReferencedSinceFence; m_bReferencedSinceFence = false; return b; }
 
 private:
 
@@ -105,6 +119,10 @@ private:
 	void*			m_pImmutablePersistentBuf;
 
 	uint			m_nOffset;
+
+	bool			m_bReferencedSinceFence;	// set when a draw binds this slot (see MarkReferenced)
+
+	GLbitfield		m_nMapFlags;				// flags used to map the persistent storage (reused by Remap)
 
 #ifdef HAVE_GL_ARB_SYNC
 	GLsync			m_nSyncObj;
@@ -188,7 +206,23 @@ public:
 	void Lock( GLMBuffLockParams *pParams, char **pAddressOut );
 	void Unlock( int nActualSize = -1, const void *pActualData = NULL );
 
-	GLuint GetHandle() const;
+	GLuint GetHandle();
+
+	// Flush the accumulated persistent-write range now (bind + one
+	// glFlushMappedBufferRange).  Called from GetHandle() on the draw path
+	// and from FlushDrawStates for bound streams whose attrib state did not
+	// change (NOOVERWRITE appends don't bump m_nRevision, so the attrib
+	// enumeration - and thus GetHandle - can be skipped while a flush is
+	// still pending).  No-op when nothing is pending.
+	void FlushPendingPersistentRange();
+
+	// Pending glFlushMappedBufferRange span on the persistent path.
+	// Accumulated in Unlock, flushed by GetHandle() right before the
+	// buffer is handed to a draw - one flush per draw instead of one per
+	// unlock.  Offsets are absolute ring offsets (slice base + lock offset).
+	bool					m_bPendingPersistentFlush;
+	uint					m_nPendingPersistentFlushStart;
+	uint					m_nPendingPersistentFlushEnd;
 		
 	friend class GLMContext;			// only GLMContext can make CGLMBuffer objects
 	friend class GLMTester;	
@@ -232,6 +266,14 @@ public:
 	uint					m_nPersistentBufferStartOffset;
 	bool					m_bUsingPersistentBuffer;
 	uint					m_nPersistentBufferSlot;	// ring slot index the persistent data was appended to at lock time
+
+	// -gl_multi_buffer_vbos: ring of plain (map/unmap) GL buffers cycled on
+	// every DISCARD lock, so the map never waits for GPU work from previous
+	// frames.  m_ringHandles[0] == m_nHandle; m_nRingSlotCount == 1 when
+	// disabled.  Only used for dynamic VB/IB when buffer storage is off.
+	GLuint					m_ringHandles[3];
+	uint					m_nRingSlot;
+	uint					m_nRingSlotCount;
 	
 	bool					m_bPseudo;				// true if the m_name is 0, and the backing is plain RAM
 

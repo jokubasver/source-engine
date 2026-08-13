@@ -2346,24 +2346,30 @@ void GLMContext::AdvancePersistentBuffer( void )
 		if ( gPersistentBufferSize[lpType] == 0 )
 			continue;
 
-		// Only fence buffers that were actually written this frame.  Inserting
+		// Only fence buffers that were actually written this frame AND
+		// actually referenced by a draw since the previous refresh.  Inserting
 		// a GL_SYNC_GPU_COMMANDS_COMPLETE fence for an idle ring forces the
 		// driver to flush the whole command stream at EndFrame, and the
 		// matching glClientWaitSync on the other end stalls the render thread -
 		// pure waste when no draw referenced the persistent path.
 		//
-		// Fence every slot that still holds data, not just the current one:
-		// draws in THIS frame may reference older slots (a buffer locked in a
-		// previous frame and drawn again without re-lock - GetHandle binds the
-		// lock-time slot).  Refreshing the fence each frame makes the
-		// BlockUntilNotBusy below - which runs when the ring returns to that
-		// slot - wait for every draw that ever referenced it, including the
-		// ones submitted since the previous refresh.
+		// Fence every referenced slot that still holds data, not just the
+		// current one: draws in THIS frame may reference older slots (a
+		// buffer locked in a previous frame and drawn again without re-lock -
+		// GetHandle binds the lock-time slot and marks it referenced).
+		// Refreshing the fence each frame makes the BlockUntilNotBusy below -
+		// which runs when the ring returns to that slot - wait for every draw
+		// that ever referenced it, including the ones submitted since the
+		// previous refresh.  Slots not drawn since the last refresh are
+		// already fully covered by their existing fence.
 		for ( uint nSlot = 0; nSlot < cNumPersistentBuffers; ++nSlot )
 		{
 			if ( m_persistentBuffer[nSlot][lpType].GetOffset() > 0 )
 			{
-				m_persistentBuffer[nSlot][lpType].InsertFence();
+				if ( m_persistentBuffer[nSlot][lpType].TakeReferencedSinceFence() )
+				{
+					m_persistentBuffer[nSlot][lpType].InsertFence();
+				}
 			}
 		}
 	}
@@ -2858,6 +2864,7 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 	memset( m_samplers, 0, sizeof( m_samplers ) );
 	memset( m_nBoundSamplerObject, 0, sizeof( m_nBoundSamplerObject ) );
+	m_texScratchPoolBytes = 0;
 	for( int i=0; i< GLM_SAMPLER_COUNT; i++)
 	{
 		GLMTexSamplingParams &params = m_samplers[i].m_samp;
@@ -3107,6 +3114,21 @@ void GLMContext::UpdateClipPlaneUniforms()
 
 GLMContext::~GLMContext	()
 {
+	// The persistent ring buffers are member objects, so their destructors
+	// would run AFTER this dtor body - i.e. after DecrementWindowRefCount()
+	// at the bottom deletes the SDL GL context, making every GL call in
+	// CPersistentBuffer::Deinit crash on a dead context.  Deinit them now,
+	// while the context is still current.  Deinit is idempotent (early-outs
+	// when the buffer was never initialized), so the later member dtors are
+	// harmless.
+	for ( uint lpType = 0; lpType < kGLMNumBufferTypes; ++lpType )
+	{
+		for ( uint lpNum = 0; lpNum < cNumPersistentBuffers; ++lpNum )
+		{
+			m_persistentBuffer[lpNum][lpType].Deinit();
+		}
+	}
+
 	if (m_debugFontTex)
 	{
 		DelTex( m_debugFontTex );
@@ -3171,7 +3193,57 @@ GLMContext::~GLMContext	()
 
 	PurgeTexCache();
 
+	// Free the texture-lock scratch pool.
+	FOR_EACH_VEC( m_texScratchPool, i )
+	{
+		free( m_texScratchPool[i].m_pPtr );
+	}
+	m_texScratchPool.Purge();
+	m_texScratchPoolBytes = 0;
+
 	DecrementWindowRefCount();
+}
+
+// Scratch slabs for CGLMTex::Lock/Unlock backing stores.  Capped at
+// cMaxTexScratchPoolBytes so a run that touches many distinct textures
+// degrades to plain malloc/free instead of pinning unbounded RAM.
+#define cMaxTexScratchPoolBytes ( 32 * 1024 * 1024 )
+
+char *GLMContext::AcquireTexScratch( uint nSize )
+{
+	if ( nSize <= cMaxTexScratchPoolBytes )
+	{
+		FOR_EACH_VEC_BACK( m_texScratchPool, i )
+		{
+			TexScratchSlab_t &slab = m_texScratchPool[i];
+			if ( slab.m_nSize >= nSize )
+			{
+				char *pPtr = slab.m_pPtr;
+				m_texScratchPoolBytes -= slab.m_nSize;
+				m_texScratchPool.Remove( i );
+				return pPtr;
+			}
+		}
+	}
+	return (char *)malloc( nSize );
+}
+
+void GLMContext::ReleaseTexScratch( char *pPtr, uint nSize )
+{
+	if ( !pPtr )
+		return;
+
+	if ( ( m_texScratchPoolBytes + nSize ) > cMaxTexScratchPoolBytes )
+	{
+		free( pPtr );
+		return;
+	}
+
+	TexScratchSlab_t slab;
+	slab.m_pPtr = pPtr;
+	slab.m_nSize = nSize;
+	m_texScratchPool.AddToTail( slab );
+	m_texScratchPoolBytes += nSize;
 }
 
 // This method must call SelectTMU()/glActiveTexture() (it's expected as a side effect).
@@ -3494,18 +3566,19 @@ void GLMContext::GrowSamplerObjectHash()
 	const uint nNewSize = nOldSize * 2;
 	const uint nHashMask = nNewSize - 1;
 
+	// Do NOT glGenSamplers the whole new table here: growth previously
+	// happened inside a draw call (via FindSamplerObject) and a burst of
+	// 512-2048 glGenSamplers mid-frame was a visible hitch on Mali.  Slots
+	// now generate their sampler object lazily on first insert
+	// (FindSamplerObject gens when m_samplerObject == 0), so growth is a
+	// pure memory move on the CPU.
 	SamplerHashEntry *pNewTable = new SamplerHashEntry[nNewSize];
 	memset( pNewTable, 0, sizeof( SamplerHashEntry ) * nNewSize );
-	for ( uint i = 0; i < nNewSize; ++i )
-	{
-		gGL->glGenSamplers( 1, &pNewTable[i].m_samplerObject );
-	}
 
 	// Re-insert the live entries; keys must re-probe into their new slots.
-	// Tombstone and empty slots stay empty in the new table.  The fresh
-	// sampler objects generated for slots that receive a carried-over live
-	// entry are never used - delete them so growth does not leak one GL
-	// sampler object per live entry.
+	// Tombstone and empty slots stay empty in the new table.  Carried-over
+	// live entries bring their own sampler object; the fresh slots stay at
+	// 0 and generate on demand.
 	for ( uint i = 0; i < nOldSize; ++i )
 	{
 		const GLMTexSamplingParams &params = m_samplerObjectHash[i].m_params;
@@ -3521,10 +3594,6 @@ void GLMContext::GrowSamplerObjectHash()
 				h = 0;
 		}
 
-		if ( pNewTable[h].m_samplerObject )
-		{
-			gGL->glDeleteSamplers( 1, &pNewTable[h].m_samplerObject );
-		}
 		pNewTable[h].m_params = params;
 		pNewTable[h].m_samplerObject = m_samplerObjectHash[i].m_samplerObject;
 	}

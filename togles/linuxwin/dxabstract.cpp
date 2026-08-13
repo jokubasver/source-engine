@@ -5372,6 +5372,31 @@ void	UnpackD3DRSITable( void )
 
 void IDirect3DDevice9::FlushClipPlaneEquation()
 {
+	// The Antonio's-trick munge matrix is a compile-time constant.  Compute
+	// its inverse/transpose exactly once instead of re-running
+	// InverseGeneral + Transpose on every SetClipPlane (the engine sets clip
+	// planes every frame).
+	static VMatrix s_matMungedInverseTransposed;
+	static bool s_bMungedInverseReady = false;
+	if ( !s_bMungedInverseReady )
+	{
+		VMatrix mat1(	1,	0,	0,	0,
+						0,	-1,	0,	0,
+						0,	0,	2,	-1,
+						0,	0,	0,	1
+						);
+		VMatrix mat2;
+		if ( mat1.InverseGeneral( mat2 ) )
+		{
+			s_matMungedInverseTransposed = mat2.Transpose();
+		}
+		else
+		{
+			s_matMungedInverseTransposed.Identity();
+		}
+		s_bMungedInverseReady = true;
+	}
+
 	for( int x=0; x<kGLMUserClipPlanes; x++)
 	{
 		GLClipPlaneEquation_t temp1;	// Antonio's way
@@ -5396,40 +5421,17 @@ void IDirect3DDevice9::FlushClipPlaneEquation()
 
 				
 			//////////////// temp2
-			VMatrix mat1(	1,	0,	0,	0,
-							0,	-1,	0,	0,
-							0,	0,	2,	-1,
-							0,	0,	0,	1
-							);
-			//mat1 = mat1.Transpose();
-								
-			VMatrix mat2;
-			bool success = mat1.InverseGeneral( mat2 );
+			VPlane origPlane( Vector( equ->x, equ->y, equ->z ), equ->w );
+			VPlane newPlane;
 				
-			if (success)
-			{
-				VMatrix mat3;
-				mat3 = mat2.Transpose();
-
-				VPlane origPlane( Vector( equ->x, equ->y, equ->z ), equ->w );
-				VPlane newPlane;
-					
-				newPlane = mat3 * origPlane /* * mat3 */;
-					
-				VPlane finalPlane = newPlane;
-					
-				temp2.x = newPlane.m_Normal.x;
-				temp2.y = newPlane.m_Normal.y;
-				temp2.z = newPlane.m_Normal.z;
-				temp2.w = newPlane.m_Dist;
-			}
-			else
-			{
-				temp2.x = 0;
-				temp2.y = 0;
-				temp2.z = 0;
-				temp2.w = 0;
-			}
+			newPlane = s_matMungedInverseTransposed * origPlane /* * mat3 */;
+				
+			VPlane finalPlane = newPlane;
+				
+			temp2.x = newPlane.m_Normal.x;
+			temp2.y = newPlane.m_Normal.y;
+			temp2.z = newPlane.m_Normal.z;
+			temp2.w = newPlane.m_Dist;
 		}
 		else
 		{
@@ -6165,9 +6167,12 @@ HRESULT IDirect3DDevice9::SetClipPlane(DWORD Index,CONST float* pPlane)
 		{
 			memcpy( m_ctx->m_flClipPlaneOrig[Index], plane, sizeof(plane) );
 			++m_ctx->m_nClipPlaneStateRevision;
-		}
 
-		FlushClipPlaneEquation();
+			// The plane actually changed - only then re-munge and re-emit the
+			// GL state.  The engine re-sets identical planes every frame and
+			// the flush recomputed a constant matrix inverse per call.
+			FlushClipPlaneEquation();
+		}
 
 		// m_ctx->WriteClipPlaneEquation( &peq, Index );
 	}

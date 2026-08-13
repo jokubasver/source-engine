@@ -143,6 +143,22 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	// once, immediately before the draw, like DXVK's PrepareDraw path.
 	FlushRenderStates();
 
+	// Flush any pending persistent-buffer write ranges before this draw.
+	// GetHandle() normally does this on the attrib-enumeration path, but
+	// NOOVERWRITE appends into a live ring slice do not bump the buffer
+	// revision, so the enumeration (and thus GetHandle) can be skipped while
+	// a flush is still pending - the GPU would read stale bytes.  Check the
+	// four bound streams directly: four loads per draw, zero GL work when
+	// nothing is pending.
+	for ( uint nStream = 0; nStream < 4; ++nStream )
+	{
+		CGLMBuffer *pBuf = m_pDevice->m_vtx_buffers[ nStream ];
+		if ( pBuf->m_bPendingPersistentFlush )
+		{
+			pBuf->FlushPendingPersistentRange();
+		}
+	}
+
 #if GLMDEBUG
 	GLM_FUNC;
 #endif
@@ -511,8 +527,18 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 						samp.m_packed.m_maxLOD = maxActiveMip;
 				}
 			}
-			m_nBoundSamplerObject[nSamplerIndex] = FindSamplerObject( samp );
-			gGL->glBindSampler( nSamplerIndex, m_nBoundSamplerObject[nSamplerIndex] );
+			// Source re-binds textures constantly, which re-dirties the sampler
+			// even when the sampling state is unchanged.  FindSamplerObject
+			// then returns the SAME sampler object that is already bound to
+			// this unit.  Skip the glBindSampler in that case - on Mali every
+			// redundant bind is a real driver descriptor-table update in the
+			// per-draw command stream.
+			const GLuint nSamplerObject = FindSamplerObject( samp );
+			if ( m_nBoundSamplerObject[nSamplerIndex] != nSamplerObject )
+			{
+				m_nBoundSamplerObject[nSamplerIndex] = nSamplerObject;
+				gGL->glBindSampler( nSamplerIndex, nSamplerObject );
+			}
 
 			GL_BATCH_PERF( m_FlushStats.m_nNumSamplingParamsChanged++ );
 
@@ -820,10 +846,37 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	Assert( ( m_pDevice->m_streams[3].m_vtxBuffer && ( m_pDevice->m_streams[3].m_vtxBuffer->m_vtxBuffer == m_pDevice->m_vtx_buffers[3] ) ) || ( ( !m_pDevice->m_streams[3].m_vtxBuffer ) && ( m_pDevice->m_vtx_buffers[3] == m_pDevice->m_pDummy_vtx_buffer ) ) );
 
 	uint nCurTotalBufferRevision;
-	nCurTotalBufferRevision = m_pDevice->m_vtx_buffers[0]->m_nRevision + m_pDevice->m_vtx_buffers[1]->m_nRevision + m_pDevice->m_vtx_buffers[2]->m_nRevision + m_pDevice->m_vtx_buffers[3]->m_nRevision;
+	{
+		// If any of these inputs have changed, we need to enumerate through all of the expected GL vertex attribs and modify anything in the GL layer that have changed.
+		// This is not always a win, but it is a net win on NVidia (by 1-4.8% depending on whether driver threading is enabled).
+		//
+		// Cheap early-out: when the decl/shader input set is unchanged, only the
+		// vertex buffers actually referenced by the current shader can affect the
+		// attrib pointers.  The engine relocks dynamic buffers every frame (each
+		// fresh ring slice bumps m_nRevision), so summing ALL four stream
+		// revisions forced the 52.2% branch below even when the shader never
+		// reads the relocked stream.  Sum only the used streams; the full loop
+		// still runs whenever the input layout itself changes.
+		// (Scoped so the earlier goto flush_error_exit does not cross these
+		// initializations.)
+		nCurTotalBufferRevision = 0;
+		const bool bInputLayoutChanged = ( m_CurAttribs.m_nVertexInputRevision != m_pDevice->m_nVertexInputRevision );
+		if ( bInputLayoutChanged )
+		{
+			nCurTotalBufferRevision = m_pDevice->m_vtx_buffers[0]->m_nRevision + m_pDevice->m_vtx_buffers[1]->m_nRevision + m_pDevice->m_vtx_buffers[2]->m_nRevision + m_pDevice->m_vtx_buffers[3]->m_nRevision;
+		}
+		else
+		{
+			for ( uint nStream = 0; nStream < 4; ++nStream )
+			{
+				if ( m_CurAttribs.m_nUsedStreamsMask & ( 1U << nStream ) )
+				{
+					nCurTotalBufferRevision += m_pDevice->m_vtx_buffers[nStream]->m_nRevision;
+				}
+			}
+		}
+	}
 
-	// If any of these inputs have changed, we need to enumerate through all of the expected GL vertex attribs and modify anything in the GL layer that have changed.
-	// This is not always a win, but it is a net win on NVidia (by 1-4.8% depending on whether driver threading is enabled).
 	if ( ( nCurTotalBufferRevision != m_CurAttribs.m_nTotalBufferRevision ) ||
 		( m_CurAttribs.m_nVertexInputRevision != m_pDevice->m_nVertexInputRevision ) )
 	{
@@ -841,6 +894,8 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 		IDirect3DVertexDeclaration9	*pVertDecl = m_pDevice->m_pVertDecl;
 		const uint8	*pVertexAttribDescToStreamIndex = pVertDecl->m_VertexAttribDescToStreamIndex;
+
+		uint nUsedStreamsMask = 0;
 
 		for( int nMask = 1, nIndex = 0; nIndex < nMaxVertexAttributesToCheck; ++nIndex, nMask <<= 1 )
 		{
@@ -866,6 +921,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 			Assert( ( ( vertexShaderAttrib >> 4 ) == pDeclElem->m_dxdecl.Usage ) && ( ( vertexShaderAttrib & 0x0F ) == pDeclElem->m_dxdecl.UsageIndex) );
 
 			const uint nStreamIndex = pDeclElem->m_dxdecl.Stream;
+			nUsedStreamsMask |= ( 1U << nStreamIndex );
 			const D3DStreamDesc *pStream = &m_pDevice->m_streams[ nStreamIndex ];
 
 			CGLMBuffer *pBuf = m_pDevice->m_vtx_buffers[ nStreamIndex ];
@@ -910,6 +966,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		}
 
 		m_nNumSetVertexAttributes = nMaxVertexAttributesToCheck;
+		m_CurAttribs.m_nUsedStreamsMask = nUsedStreamsMask;
 	}
 
 	// fragment stage --------------------------------------------------------------------
