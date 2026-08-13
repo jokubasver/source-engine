@@ -50,6 +50,12 @@ ConVar gl_pow2_tempmem( "gl_pow2_tempmem", "0", FCVAR_INTERNAL_USE,
                         "If set, use power-of-two allocations for temporary texture memory during uploads. "
                         "May help with fragmentation on certain systems caused by heavy churn of large allocations." );
 
+ConVar gl_tex_readback_pbo( "gl_tex_readback_pbo", "0", FCVAR_INTERNAL_USE,
+                        "If set, texture readbacks (D3DLOCK_READONLY locks of textures without a host copy) go "
+                        "through a GL_PIXEL_PACK_BUFFER so glReadPixels does not force an immediate tile flush "
+                        "on Mali TBDR.  The stall moves to the map; default off because the mapped pointer "
+                        "semantics differ from the plain client-memory path." );
+
 #define TEXSPACE_LOGGING 0
 
 // encoding layout to an index where the bits read
@@ -877,6 +883,9 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 
 	m_mapped = NULL;
 	m_pbo = 0;
+	m_pReadbackBuffer = NULL;
+	m_nReadbackBufferSize = 0;
+	m_pReadbackPBO = 0;
 
 	if( m_layout->m_key.m_texFlags & kGLMTexDynamic )
 	{
@@ -983,6 +992,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	if ( !(layout->m_key.m_texFlags & kGLMTexRenderable) && m_texClientStorage )
 	{
 		m_backing = (char *)malloc( m_layout->m_storageTotalSize );
+		m_nBackingSize = 0;	// plain malloc - free() directly
 
 		// track bytes allocated for non-RT's
 		int formindex = sEncodeLayoutAsIndex( &layout->m_key );
@@ -1000,6 +1010,7 @@ CGLMTex::CGLMTex( GLMContext *ctx, GLMTexLayout *layout, uint levels, const char
 	else
 	{
 		m_backing = NULL;
+		m_nBackingSize = 0;
 		
 		m_texClientStorage = false;
 	}		
@@ -1196,8 +1207,16 @@ CGLMTex::~CGLMTex( )
 	
 	if (m_backing)
 	{
-		free( m_backing );
+		if ( m_nBackingSize )
+		{
+			m_ctx->ReleaseTexScratch( m_backing, m_nBackingSize );
+		}
+		else
+		{
+			free( m_backing );
+		}
 		m_backing = NULL;
+		m_nBackingSize = 0;
 	}
 	
 	if (m_debugLabel)
@@ -1208,6 +1227,18 @@ CGLMTex::~CGLMTex( )
 
 	if( m_pbo )
 		gGL->glDeleteBuffers( 1, &m_pbo );
+
+	if ( m_pReadbackBuffer )
+	{
+		free( m_pReadbackBuffer );
+		m_pReadbackBuffer = NULL;
+		m_nReadbackBufferSize = 0;
+	}
+	if ( m_pReadbackPBO )
+	{
+		gGL->glDeleteBuffers( 1, &m_pReadbackPBO );
+		m_pReadbackPBO = 0;
+	}
 
 	m_ctx = NULL;
 }
@@ -1302,6 +1333,7 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 		if( readOnly )
 		{
 			GLMTexLayoutSlice *pSlice = &m_layout->m_slices[ desc->m_sliceIndex ];
+			bool bReadbackThroughPBO = false;
 			if ( m_backing )
 			{
 				data = (GLubyte*)( m_backing + pSlice->m_storageOffset );	// this would change for PBO
@@ -1312,8 +1344,33 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 				// backing storage).  Allocate scratch storage, read into it,
 				// and let Unlock free it (tracked on the lock descriptor) -
 				// writing into NULL + offset would crash.
-				data = (GLubyte*)malloc( pSlice->m_storageSize );
+				if ( gl_tex_readback_pbo.GetBool() && !m_mapped )
+				{
+					// PBO path: glReadPixels into a pack buffer is
+					// asynchronous on the GPU side; the stall moves to the
+					// map below instead of the read.
+					if ( !m_pReadbackPBO )
+					{
+						gGL->glGenBuffers( 1, &m_pReadbackPBO );
+					}
+					gGL->glBindBuffer( GL_PIXEL_PACK_BUFFER, m_pReadbackPBO );
+					gGL->glBufferData( GL_PIXEL_PACK_BUFFER, pSlice->m_storageSize, NULL, GL_STREAM_READ );
+					data = NULL;	// read into the PBO
+					bReadbackThroughPBO = true;
+				}
+				else
+				{
+					// Grow-only persistent scratch: the old per-lock malloc
+					// was freed again at unlock, churning the heap.
+					if ( m_nReadbackBufferSize < pSlice->m_storageSize )
+					{
+						m_pReadbackBuffer = (GLubyte*)realloc( m_pReadbackBuffer, pSlice->m_storageSize );
+						m_nReadbackBufferSize = pSlice->m_storageSize;
+					}
+					data = m_pReadbackBuffer;
+				}
 				desc->m_pReadbackBuffer = data;
+				desc->m_bReadbackIsPBO = bReadbackThroughPBO;
 			}
 			//int sliceSize = m_layout->m_slices[ desc->m_sliceIndex ].m_storageSize;
 
@@ -1335,10 +1392,11 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 				// tile flush on Mali TBDR, and the extra glGenFramebuffers /
 				// glDeleteFramebuffers / glFramebufferTexture2D validation churn
 				// per call is pure overhead.
-				GLint Rfbo = 0, Dfbo = 0;
 
-				gGL->glGetIntegerv( GL_DRAW_FRAMEBUFFER_BINDING, &Dfbo );
-				gGL->glGetIntegerv( GL_READ_FRAMEBUFFER_BINDING, &Rfbo );
+				// The context mirrors the FBO bindings; use them instead of two
+				// glGetIntegerv driver round-trips per readback.
+				CGLMFBO *pPrevReadFBO = m_ctx->m_boundReadFBO;
+				CGLMFBO *pPrevDrawFBO = m_ctx->m_boundDrawFBO;
 
 				if ( !m_ctx->m_nReadTexelsFBO )
 				{
@@ -1355,8 +1413,15 @@ GLubyte *CGLMTex::ReadTexels( GLMTexLockDesc *desc, bool readWholeSlice, bool re
 				convert_texture(fmt, 0, 0, fmt, dataType, NULL);
 				gGL->glReadPixels(0, 0, m_layout->m_slices[ desc->m_sliceIndex ].m_xSize, m_layout->m_slices[ desc->m_sliceIndex ].m_ySize, fmt, dataType, data);
 
-				gGL->glBindFramebuffer(GL_READ_FRAMEBUFFER, Rfbo);
-				gGL->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dfbo);
+				if ( bReadbackThroughPBO )
+				{
+					data = (GLubyte*)gGL->glMapBufferRange( GL_PIXEL_PACK_BUFFER, 0, pSlice->m_storageSize, GL_MAP_READ_BIT );
+					desc->m_pReadbackBuffer = data;
+					gGL->glBindBuffer( GL_PIXEL_PACK_BUFFER, 0 );
+				}
+
+				m_ctx->BindFBOToCtx( pPrevDrawFBO, GL_DRAW_FRAMEBUFFER );
+				m_ctx->BindFBOToCtx( pPrevReadFBO, GL_READ_FRAMEBUFFER );
 
 				break;
 			}
@@ -3844,8 +3909,13 @@ void CGLMTex::WriteTexels( GLMTexLockDesc *desc, bool writeWholeSlice, bool noDa
 		// Ensure this texture is bound to TMU 0 (the actual sampling-time bind is irrelevant here -
 		// glGenerateMipmap operates on the currently bound texture object for this target). The
 		// earlier m_ctx->BindTexToTMU( this, 0 ) at the top of WriteTexels already handles this,
-		// but other paths into WriteTexels may have re-bound textures since, so re-bind defensively.
-		m_ctx->BindTexToTMU( this, 0 );
+		// and nothing inside WriteTexels re-binds a texture since (the PBO binds are a different
+		// binding point), so only re-bind when the mirror disagrees - the defensive re-bind was
+		// up to 3 glBindTexture calls per auto-mip upload.
+		if ( m_ctx->m_samplers[0].m_pBoundTex != this )
+		{
+			m_ctx->BindTexToTMU( this, 0 );
+		}
 
 		// Relax the level clamp before generating: the base-mip upload above capped
 		// GL_TEXTURE_MAX_LEVEL at 0, and glGenerateMipmap may respect that cap on
@@ -3915,25 +3985,26 @@ void CGLMTex::Lock( GLMTexLockParams *params, char** addressOut, int* yStrideOut
 	// d - the params of the lock request have been saved in the lock table (in the context)
 	
 	// so step 1 is unambiguous.  If there's no backing storage, make some.
+	// Acquire from the context's scratch slab pool: the old malloc-per-lock +
+	// free-per-unlock churned the heap on every streaming/procedural texture
+	// update (client storage is off on Mali, so a full-mip-chain buffer was
+	// allocated and freed per lock cycle).
 	if (!m_backing && !(m_layout->m_key.m_texFlags & kGLMTexDynamic))
 	{
+		uint32_t unStorageSize = m_layout->m_storageTotalSize;
 		if ( gl_pow2_tempmem.GetBool() )
 		{
-			uint32_t unStoragePow2 = m_layout->m_storageTotalSize;
 			// Round up to next power of 2
-			unStoragePow2--;
-			unStoragePow2 |= unStoragePow2 >> 1;
-			unStoragePow2 |= unStoragePow2 >> 2;
-			unStoragePow2 |= unStoragePow2 >> 4;
-			unStoragePow2 |= unStoragePow2 >> 8;
-			unStoragePow2 |= unStoragePow2 >> 16;
-			unStoragePow2++;
-			m_backing = (char *)malloc( unStoragePow2 );
+			unStorageSize--;
+			unStorageSize |= unStorageSize >> 1;
+			unStorageSize |= unStorageSize >> 2;
+			unStorageSize |= unStorageSize >> 4;
+			unStorageSize |= unStorageSize >> 8;
+			unStorageSize |= unStorageSize >> 16;
+			unStorageSize++;
 		}
-		else
-		{
-			m_backing = (char *)malloc( m_layout->m_storageTotalSize );
-		}
+		m_backing = (char *)m_ctx->AcquireTexScratch( unStorageSize );
+		m_nBackingSize = unStorageSize;
 
 		// clear the kSliceStorageValid bit on all slices
 		for( int i=0; i<m_layout->m_sliceCount; i++)
@@ -4010,6 +4081,7 @@ void CGLMTex::Lock( GLMTexLockParams *params, char** addressOut, int* yStrideOut
 	desc->m_sliceIndex = sliceIndex;
 	desc->m_sliceBaseOffset = m_layout->m_slices[sliceIndex].m_storageOffset;
 	desc->m_pReadbackBuffer = NULL;
+	desc->m_bReadbackIsPBO = false;
 
 	// to calculate the additional offset we need to look at the rect's min corner
 	// combined with the per-texel size and Y/Z stride
@@ -4114,20 +4186,25 @@ void CGLMTex::Unlock( GLMTexLockParams *params )
 					GLMStop();
 				}
 
-				// Release any scratch readback storage allocated by ReadTexels
-				// (readonly locks on textures without a host copy).
-				if ( desc->m_pReadbackBuffer )
-				{
-					free( desc->m_pReadbackBuffer );
-					desc->m_pReadbackBuffer = NULL;
-				}
-
 				// Read-only locks carry no new texel data (the slice storage
 				// was copied OUT of the texture), so there is nothing to
 				// upload - and for dynamic textures there is no backing store
 				// to upload FROM, so skipping avoids uploading stale PBO data.
 				if ( desc->m_req.m_readonly )
 				{
+					// If the readback went through a pack PBO
+					// (gl_tex_readback_pbo), the returned pointer is a
+					// mapping - unmap it now.  Plain client-memory scratch is
+					// per-texture persistent and needs nothing.
+					if ( desc->m_bReadbackIsPBO )
+					{
+						gGL->glBindBuffer( GL_PIXEL_PACK_BUFFER, m_pReadbackPBO );
+						gGL->glUnmapBuffer( GL_PIXEL_PACK_BUFFER );
+						gGL->glBindBuffer( GL_PIXEL_PACK_BUFFER, 0 );
+					}
+					desc->m_pReadbackBuffer = NULL;
+					desc->m_bReadbackIsPBO = false;
+
 					m_ctx->m_texLocks.FastRemove( j );
 					continue;
 				}
@@ -4186,10 +4263,21 @@ void CGLMTex::Unlock( GLMTexLockParams *params )
 		// because it reuploads the whole thing each slice; we only use 3D textures
 		// for the 32x32x32 colorpsace conversion lookups and debugging the problem
 		// would not save any more memory.
+		// Backing buffers acquired from the context scratch pool are recycled
+		// there instead of being freed - the next lock of any texture reuses
+		// the slab without heap churn.
 		if ( !m_texClientStorage && ( m_texGLTarget == GL_TEXTURE_2D ) && m_backing )
 		{
-			free(m_backing);
+			if ( m_nBackingSize )
+			{
+				m_ctx->ReleaseTexScratch( m_backing, m_nBackingSize );
+			}
+			else
+			{
+				free( m_backing );
+			}
 			m_backing = NULL;
+			m_nBackingSize = 0;
 		}
 	}
 }

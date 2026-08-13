@@ -219,8 +219,9 @@ struct GLMTexLockDesc
 	int					m_sliceBaseOffset;		// where is that in the texture data
 	int					m_sliceRegionOffset;	// offset to the start (lowest address corner) of the region requested
 
-	void				*m_pReadbackBuffer;		// scratch malloc'd readback storage for readonly locks on
-												// textures without a host copy (NULL when unused); freed at unlock
+	void				*m_pReadbackBuffer;		// scratch readback storage for readonly locks on
+												// textures without a host copy (NULL when unused)
+	bool				m_bReadbackIsPBO;		// m_pReadbackBuffer is a PBO mapping (unmap at unlock)
 };
 
 //===============================================================================
@@ -581,6 +582,12 @@ protected:
 	GLubyte					*m_mapped;
 	GLenum					m_texGLTarget;
 	uint					m_nSamplerType;		// SAMPLER_2D, etc.
+
+	// Readback scratch for backing-less textures (see ReadTexels): grow-only
+	// CPU buffer + optional GL_PIXEL_PACK_BUFFER (gl_tex_readback_pbo).
+	GLubyte					*m_pReadbackBuffer;
+	uint					m_nReadbackBufferSize;
+	GLuint					m_pReadbackPBO;
 	
 	GLMTexSamplingParams	m_SamplingParams;
 
@@ -601,6 +608,7 @@ protected:
 	int						m_rtAttachCount; // how many RT's have this texture attached somewhere
 
 	char					*m_backing;		// backing storage if available
+	uint					m_nBackingSize;		// 0 = plain malloc (free() directly); else pool slab size (return via ReleaseTexScratch)
 	
 	int						m_lockCount;	// lock reqs are stored in the GLMContext for tracking
 
