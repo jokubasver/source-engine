@@ -30,6 +30,7 @@
 
 #include "togles/rendermechanism.h"
 #include "tier0/dbg.h"
+#include "tier0/icommandline.h"
 #include "tier1/strtools.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/convar.h"
@@ -1441,11 +1442,11 @@ void D3DToGL::PrintParameterToString ( uint32 dwToken, uint32 dwSourceOrDest, ch
 					// Is this iterator centroid?
 					if ( m_nCentroidMask & ( 0x00000001 << dwRegNum ) )
 					{
-						V_snprintf( buff, sizeof( buff ), "centroid in vec4 oT%d", dwRegNum ); // centroid varying
+						V_snprintf( buff, sizeof( buff ), "centroid in highp vec4 oT%d", dwRegNum ); // centroid varying
 					}
 					else
 					{
-						V_snprintf( buff, sizeof( buff ), "in vec4 oT%d", dwRegNum );
+						V_snprintf( buff, sizeof( buff ), "in highp vec4 oT%d", dwRegNum );
 					}					
 					bAllowWriteMask = false;
 				}
@@ -2012,11 +2013,11 @@ void D3DToGL::Handle_DCL()
 					char buf[256];
 					if ( m_nCentroidMask & ( 0x00000001 << dwUsageIndex ) )
 					{
-						V_snprintf( buf, sizeof( buf ), "centroid in vec4 oT%d;\n", dwUsageIndex ); // centroid varying
+						V_snprintf( buf, sizeof( buf ), "centroid in highp vec4 oT%d;\n", dwUsageIndex ); // centroid varying
 					}
 					else
 					{
-						V_snprintf( buf, sizeof( buf ), "in vec4 oT%d;\n", dwUsageIndex );
+						V_snprintf( buf, sizeof( buf ), "in highp vec4 oT%d;\n", dwUsageIndex );
 					}
 					
 					StrcatToHeaderCode( buf );
@@ -3122,11 +3123,11 @@ void D3DToGL::WriteGLSLOutputVariableAssignments()
 				char buf[256];
 				if ( m_nCentroidMask & ( 0x00000001 << dwUsageIndex ) )
 				{
-					V_snprintf( buf, sizeof( buf ), "centroid out vec4 oT%d;\n", dwUsageIndex ); // centroid varying
+					V_snprintf( buf, sizeof( buf ), "centroid out highp vec4 oT%d;\n", dwUsageIndex ); // centroid varying
 				}
 				else
 				{
-					V_snprintf( buf, sizeof( buf ), "out vec4 oT%d;\n", dwUsageIndex );
+					V_snprintf( buf, sizeof( buf ), "out highp vec4 oT%d;\n", dwUsageIndex );
 				}
 				StrcatToHeaderCode( buf );
 													
@@ -3375,7 +3376,18 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( ( dwToken & 0xFFFF0000 ) == 0xFFFF0000 )
 	{
 		// must explicitly enable extensions if emitting GLSL
-		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision highp float;\n#define varying in\n\n%s", fbfExtText, glslExtText );
+		//
+		// Fragment shaders default to highp to match the vertex stage.
+		// -gl_mediump_ps switches the fragment default to mediump: on
+		// Mali-G31 FP16 ALU throughput is 2-4x FP32, and virtually all HL2
+		// fragment math (lighting, fog, texture blend) is precision-safe in
+		// FP16 because the varyings (texcoords, colors, clip distances, fog)
+		// are declared highp explicitly below.  World-space values passed
+		// through the pc uniform array stay highp via the explicit uniform
+		// declaration, so eye-position-driven specular keeps its precision
+		// at the cost of a promote-to-highp on those ops only.
+		const char *pFragPrecision = ( CommandLine()->FindParm( "-gl_mediump_ps" ) != 0 ) ? "mediump" : "highp";
+		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision %s float;\n#define varying in\n\n%s", fbfExtText, pFragPrecision, glslExtText );
 		m_bVertexShader = false;
 	}
 	else // vertex shader
@@ -3737,11 +3749,17 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		PrintToBuf( *m_pBufHeaderCode, "//HIGHWATERBONE-%i\n", m_nHighestBoneRegister + 1 );
 	}
 
-	PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 %s[%d];\n", m_bVertexShader ? "vc" : "pc", m_nHighestRegister + 1 );
+	// The constant arrays are declared highp explicitly so that switching the
+	// fragment default to mediump (-gl_mediump_ps) does not quantize the
+	// world-space values carried through pc (eye position, flashlight origin):
+	// FP16 at map-scale distances would make specular/attenuation inputs jump
+	// in ~10-unit steps.  Promoting only the ops that consume these uniforms
+	// is far cheaper than running the whole shader in FP32.
+	PrintToBuf( *m_pBufHeaderCode, "\nuniform highp vec4 %s[%d];\n", m_bVertexShader ? "vc" : "pc", m_nHighestRegister + 1 );
 
 	if ( ( m_nHighestBoneRegister >= 0 ) && ( m_bVertexShader ) && ( m_bGenerateBoneUniformBuffer ) )
 	{
-		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 %s[%d];\n", "vcbones", m_nHighestBoneRegister + 1 );
+		PrintToBuf( *m_pBufHeaderCode, "\nuniform highp vec4 %s[%d];\n", "vcbones", m_nHighestBoneRegister + 1 );
 	}
 
 	if ( m_bVertexShader )
@@ -3751,8 +3769,10 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		PrintToBuf( *m_pBufHeaderCode, "uniform vec4 uClipPlane1;\n" );
 	}
 
-	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist0;\n" );
-	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist1;\n" );
+	// Varyings carry highp explicitly so both stages keep matching precision
+	// regardless of the fragment default precision.
+	PrintToBuf( *m_pBufHeaderCode, "varying highp float vClipDist0;\n" );
+	PrintToBuf( *m_pBufHeaderCode, "varying highp float vClipDist1;\n" );
 				
 	for( int i=0; i<32; i++ )
 	{
@@ -3927,12 +3947,12 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 					{
 						if ( m_nCentroidMask & ( 0x00000001 << i ) )
 						{
-							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "centroid out vec4 oT%d;\n", i ); // centroid varying
+							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "centroid out highp vec4 oT%d;\n", i ); // centroid varying
 							StrcatToHeaderCode( outTexCoordBuff );
 						}
 						else
 						{
-							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "out vec4 oT%d;\n", i );
+							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "out highp vec4 oT%d;\n", i );
 							StrcatToHeaderCode( outTexCoordBuff );
 						}
 					}
