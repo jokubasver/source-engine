@@ -635,6 +635,7 @@ CGLMBuffer::CGLMBuffer( GLMContext *pCtx, EGLMBufferType type, uint size, uint o
 	m_nPendingPersistentFlushEnd = 0;
 	m_nRingSlot = 0;
 	m_nRingSlotCount = 1;
+	m_nRingSlotFrame = 0xFFFFFFFF;
 	m_ringHandles[0] = m_ringHandles[1] = m_ringHandles[2] = 0;
 		
 #if GL_ENABLE_UNLOCK_BUFFER_OVERWRITE_DETECTION
@@ -1092,14 +1093,25 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 	}
 	else
 	{
-		// Multi-buffer ring: every DISCARD advances to the next GL buffer in
-		// the ring, so the map never has to wait for GPU work from previous
-		// frames.  NOOVERWRITE appends stay on the current slot.
+		// Multi-buffer ring: the slot advances ONCE PER FRAME (the first
+		// DISCARD of each frame), not per discard.  A single frame can
+		// discard + rewrap the shared dynamic VB many times (flexed and
+		// software-skinned meshes lock it repeatedly); advancing per
+		// discard recycled slot buffers while the GPU was still reading
+		// them - TBDR submits are deferred, so the GPU consumes a frame's
+		// geometry after the CPU has moved on.  One slot per frame gives
+		// each slot's data a 3-frame lifetime, matching the persistent
+		// ring's guarantee.  NOOVERWRITE appends stay on the current slot.
 		if ( g_bMultiBufferVBOs && m_bDynamic && pParams->m_bDiscard && ( m_nRingSlotCount > 1 ) )
 		{
-			m_nRingSlot = ( m_nRingSlot + 1 ) % m_nRingSlotCount;
-			m_nHandle = m_ringHandles[ m_nRingSlot ];
-			m_nRevision++;	// new GL buffer name - attrib pointers must re-issue
+			const uint nFrame = m_pCtx->m_nCurFrame;
+			if ( nFrame != m_nRingSlotFrame )
+			{
+				m_nRingSlot = ( m_nRingSlot + 1 ) % m_nRingSlotCount;
+				m_nHandle = m_ringHandles[ m_nRingSlot ];
+				m_nRingSlotFrame = nFrame;
+				m_nRevision++;	// new GL buffer name - attrib pointers must re-issue
+			}
 		}
 
 		// bind (yes, even for pseudo - this binds name 0)
@@ -1108,9 +1120,13 @@ void CGLMBuffer::Lock( GLMBuffLockParams *pParams, char **pAddressOut )
 		// perform discard if requested
 		if ( pParams->m_bDiscard )
 		{
-			// The multi-buffer ring already advanced to a fresh slot buffer
-			// (2 frames old, never rewritten since), so the orphan realloc is
-			// unnecessary there; the revision was bumped at the slot swap.
+			// Multi-buffer: the slot advances once per frame (see above), so
+			// no per-discard orphan realloc is needed and the revision was
+			// already bumped at the slot swap.  Mid-frame discards that stay
+			// on the current slot rely on GL_MAP_INVALIDATE_BUFFER_BIT in
+			// the map below to rename storage while earlier draws of this
+			// frame's data are still in flight - the same contract the
+			// single-buffer path has used all along.
 			if ( !g_bMultiBufferVBOs || ( m_nRingSlotCount <= 1 ) )
 			{
 				// observe gl_bufmode on any orphan event.

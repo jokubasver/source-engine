@@ -271,9 +271,14 @@ public:
 	// every DISCARD lock, so the map never waits for GPU work from previous
 	// frames.  m_ringHandles[0] == m_nHandle; m_nRingSlotCount == 1 when
 	// disabled.  Only used for dynamic VB/IB when buffer storage is off.
+	// The ring advances ONCE PER FRAME (first discard of each frame): the
+	// engine can discard+rewrap the shared dynamic VB many times per frame,
+	// and per-discard recycling would reuse slots while the GPU is still
+	// reading them (TBDR submits are deferred).
 	GLuint					m_ringHandles[3];
 	uint					m_nRingSlot;
 	uint					m_nRingSlotCount;
+	uint					m_nRingSlotFrame;
 	
 	bool					m_bPseudo;				// true if the m_name is 0, and the backing is plain RAM
 
