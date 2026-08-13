@@ -6442,8 +6442,28 @@ FORCEINLINE void CShaderAPIDx8::SetVertexShaderConstantInternal( int var, float 
 	{
 		Assert( var + numVecs <= g_pHardwareConfig->NumVertexShaderConstants() );
 
-		if ( !bForce && memcmp( pVec, &m_DynamicState.m_pVectorVertexShaderConstant[var], numVecs * 4 * sizeof( float ) ) == 0 )
-			return;
+		if ( !bForce )
+		{
+			// Skip the unchanged head, then submit only the changed tail -
+			// same trick as the pixel-shader path.  Bone matrices and other
+			// large constant blocks get resubmitted every draw with only a
+			// few trailing vectors actually changing; comparing + copying +
+			// uploading the whole range every time was measurable on ARM.
+			const uint32 *pSrc = (const uint32*)pVec;
+			const uint32 *pDst = (const uint32*)&m_DynamicState.m_pVectorVertexShaderConstant[var];
+			int nCmpVecs = numVecs;
+			while ( nCmpVecs && ( pSrc[0] == pDst[0] ) && ( pSrc[1] == pDst[1] ) && ( pSrc[2] == pDst[2] ) && ( pSrc[3] == pDst[3] ) )
+			{
+				pSrc += 4;
+				pDst += 4;
+				nCmpVecs--;
+				var++;
+			}
+			if ( !nCmpVecs )
+				return;
+			pVec = (const float*)pSrc;
+			numVecs = nCmpVecs;
+		}
 
 		Dx9Device()->SetVertexShaderConstantF( var, pVec, numVecs );
 		memcpy( &m_DynamicState.m_pVectorVertexShaderConstant[var], pVec, numVecs * 4 * sizeof(float) );
