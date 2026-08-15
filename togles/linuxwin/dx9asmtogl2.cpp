@@ -2976,11 +2976,12 @@ void D3DToGL::Handle_NRM()
 	}
 
 	CUtlString sSrc = EnsureNumSwizzleComponents( pSrc0Reg, 3 );
-	// Run the normalize in highp: with mediump the squared length of even a
-	// modestly sized vector can overflow FP16 (max 65504) to infinity,
-	// producing a zero/NaN result.  The input is promoted by the explicit
-	// constructor; the result still lands in the mediump dest register.
-	PrintToALUCodeWithIndents( "%s = normalize( highp vec3( %s ) );\n", pDestReg, sSrc.String() );
+	// Plain normalize: the Mali r13p0 GLSL compiler rejects precision
+	// qualifiers on constructors (highp vec3(...) is a parse error even at
+	// #version 320 es), which broke every shader using NRM.  Vertex-shader
+	// NRM already runs at the VS default (highp); fragment NRM stays at the
+	// PS default precision.
+	PrintToALUCodeWithIndents( "%s = normalize( %s );\n", pDestReg, sSrc.String() );
 }
 
 void D3DToGL::Handle_UnaryOp( uint32 nInstruction )
