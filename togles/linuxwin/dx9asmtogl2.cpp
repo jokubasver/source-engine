@@ -30,7 +30,6 @@
 
 #include "togles/rendermechanism.h"
 #include "tier0/dbg.h"
-#include "tier0/icommandline.h"
 #include "tier1/strtools.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/convar.h"
@@ -1442,11 +1441,11 @@ void D3DToGL::PrintParameterToString ( uint32 dwToken, uint32 dwSourceOrDest, ch
 					// Is this iterator centroid?
 					if ( m_nCentroidMask & ( 0x00000001 << dwRegNum ) )
 					{
-						V_snprintf( buff, sizeof( buff ), "centroid in highp vec4 oT%d", dwRegNum ); // centroid varying
+						V_snprintf( buff, sizeof( buff ), "centroid in vec4 oT%d", dwRegNum ); // centroid varying
 					}
 					else
 					{
-						V_snprintf( buff, sizeof( buff ), "in highp vec4 oT%d", dwRegNum );
+						V_snprintf( buff, sizeof( buff ), "in vec4 oT%d", dwRegNum );
 					}					
 					bAllowWriteMask = false;
 				}
@@ -2013,11 +2012,11 @@ void D3DToGL::Handle_DCL()
 					char buf[256];
 					if ( m_nCentroidMask & ( 0x00000001 << dwUsageIndex ) )
 					{
-						V_snprintf( buf, sizeof( buf ), "centroid in highp vec4 oT%d;\n", dwUsageIndex ); // centroid varying
+						V_snprintf( buf, sizeof( buf ), "centroid in vec4 oT%d;\n", dwUsageIndex ); // centroid varying
 					}
 					else
 					{
-						V_snprintf( buf, sizeof( buf ), "in highp vec4 oT%d;\n", dwUsageIndex );
+						V_snprintf( buf, sizeof( buf ), "in vec4 oT%d;\n", dwUsageIndex );
 					}
 					
 					StrcatToHeaderCode( buf );
@@ -2826,32 +2825,20 @@ void D3DToGL::HandleBinaryOp_GLSL( uint32 nInstruction )
 		int nDestComponents = GetNumSwizzleComponents( sParam1.String() );
 		int nSrcComponents = GetNumSwizzleComponents( sParam2.String() );
 		
-		if ( nInstruction == D3DSIO_POW )
+		// All remaining instructions can use GLSL intrinsics like dot() and cross().
+		bool bDoubleClose = OpenIntrinsic( nInstruction, buff, sizeof( buff ), nDestComponents, nSrcComponents );
+
+		if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SGE ) )
 		{
-			// Clamp the base to >= 0: in FP16 (mediump) rounding can flip
-			// tiny dot products negative, and pow(negative, y) is NaN in
-			// GLSL, propagating through specular/lighting into garbage
-			// colors.  D3D pow is also undefined for negative bases, so the
-			// clamp only turns NaN into the sensible 0 result.
-			PrintToALUCodeWithIndents( "%s = pow( max( %s, 0.0 ), %s );\n", sParam1.String(), sParam2.String(), sParam3.String() );
+			PrintToALUCodeWithIndents( "%s = %s%s >= %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
+		}
+		else if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SLT ) )
+		{
+			PrintToALUCodeWithIndents( "%s = %s%s < %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
 		}
 		else
 		{
-			// All remaining instructions can use GLSL intrinsics like dot() and cross().
-			bool bDoubleClose = OpenIntrinsic( nInstruction, buff, sizeof( buff ), nDestComponents, nSrcComponents );
-
-			if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SGE ) )
-			{
-				PrintToALUCodeWithIndents( "%s = %s%s >= %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
-			}
-			else if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SLT ) )
-			{
-				PrintToALUCodeWithIndents( "%s = %s%s < %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
-			}
-			else
-			{
-				PrintToALUCodeWithIndents( "%s = %s%s, %s %s;\n", sParam1.String(), buff, sParam2.String(), sParam3.String(), bDoubleClose ? ") )" : ")" );
-			}
+			PrintToALUCodeWithIndents( "%s = %s%s, %s %s;\n", sParam1.String(), buff, sParam2.String(), sParam3.String(), bDoubleClose ? ") )" : ")" );
 		}
 	}
 
@@ -2976,11 +2963,6 @@ void D3DToGL::Handle_NRM()
 	}
 
 	CUtlString sSrc = EnsureNumSwizzleComponents( pSrc0Reg, 3 );
-	// Plain normalize: the Mali r13p0 GLSL compiler rejects precision
-	// qualifiers on constructors (highp vec3(...) is a parse error even at
-	// #version 320 es), which broke every shader using NRM.  Vertex-shader
-	// NRM already runs at the VS default (highp); fragment NRM stays at the
-	// PS default precision.
 	PrintToALUCodeWithIndents( "%s = normalize( %s );\n", pDestReg, sSrc.String() );
 }
 
@@ -2998,12 +2980,7 @@ void D3DToGL::Handle_UnaryOp( uint32 nInstruction )
 	}
 	else if ( nInstruction == D3DSIO_RSQ )
 	{
-		// Clamp the input to >= 0: in FP16 (mediump) rounding can flip tiny
-		// dot products negative, and inversesqrt(negative) is NaN which
-		// propagates through normalize/lighting into garbage colors.  The
-		// input is semantically a squared length and should never be
-		// negative, so the clamp is a no-op in FP32.
-		PrintToALUCodeWithIndents( "%s = inversesqrt( max( %s, 0.0 ) );\n", sParam1.String(), sParam2.String() );
+		PrintToALUCodeWithIndents( "%s = inversesqrt( %s );\n", sParam1.String(), sParam2.String() );
 	}
 	else if ( nInstruction == D3DSIO_RCP )
 	{
@@ -3145,11 +3122,11 @@ void D3DToGL::WriteGLSLOutputVariableAssignments()
 				char buf[256];
 				if ( m_nCentroidMask & ( 0x00000001 << dwUsageIndex ) )
 				{
-					V_snprintf( buf, sizeof( buf ), "centroid out highp vec4 oT%d;\n", dwUsageIndex ); // centroid varying
+					V_snprintf( buf, sizeof( buf ), "centroid out vec4 oT%d;\n", dwUsageIndex ); // centroid varying
 				}
 				else
 				{
-					V_snprintf( buf, sizeof( buf ), "out highp vec4 oT%d;\n", dwUsageIndex );
+					V_snprintf( buf, sizeof( buf ), "out vec4 oT%d;\n", dwUsageIndex );
 				}
 				StrcatToHeaderCode( buf );
 													
@@ -3398,38 +3375,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( ( dwToken & 0xFFFF0000 ) == 0xFFFF0000 )
 	{
 		// must explicitly enable extensions if emitting GLSL
-		//
-		// Fragment shaders default to highp to match the vertex stage.
-		// -gl_mediump_ps switches the fragment default to mediump: on
-		// Mali-G31 FP16 ALU throughput is 2-4x FP32, and virtually all HL2
-		// fragment math (lighting, fog, texture blend) is precision-safe in
-		// FP16 because the varyings (texcoords, colors, clip distances, fog)
-		// are declared highp explicitly below.  World-space values passed
-		// through the pc uniform array stay highp via the explicit uniform
-		// declaration, so eye-position-driven specular keeps its precision
-		// at the cost of a promote-to-highp on those ops only.
-		//
-		// Mediump is the default on ARM (no measurable quality difference in
-		// testing); -gl_force_highp_ps restores the classic FP32 default.
-		static bool s_bCheckedFragPrecisionMode = false;
-		static bool s_bARMDefaultMediump = false;
-		if ( !s_bCheckedFragPrecisionMode )
-		{
-			s_bARMDefaultMediump = gGL && ( gGL->m_nDriverProvider == cGLDriverProviderARM );
-			s_bCheckedFragPrecisionMode = true;
-		}
-		const bool bUseMediump = ( CommandLine()->FindParm( "-gl_mediump_ps" ) != 0 )
-			|| ( s_bARMDefaultMediump && ( CommandLine()->FindParm( "-gl_force_highp_ps" ) == 0 ) );
-		const char *pFragPrecision = bUseMediump ? "mediump" : "highp";
-
-		static bool s_bReportedFragPrecision = false;
-		if ( !s_bReportedFragPrecision )
-		{
-			Msg( "GL fragment shader precision: %s\n", pFragPrecision );
-			s_bReportedFragPrecision = true;
-		}
-
-		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision %s float;\n#define varying in\n\n%s", fbfExtText, pFragPrecision, glslExtText );
+		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision highp float;\n#define varying in\n\n%s", fbfExtText, glslExtText );
 		m_bVertexShader = false;
 	}
 	else // vertex shader
@@ -3757,9 +3703,9 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( m_bNeedsSinCosDeclarations )
 	{
 		AppendIndentation( m_pBufParamCode, &m_nParamCodeLen );
-		StrcatToParamCode( "highp vec4 scA = vec4( -1.55009923e-6, -2.17013894e-5, 0.00260416674, 0.00026041668 );\n" );
+		StrcatToParamCode( "vec4 scA = vec4( -1.55009923e-6, -2.17013894e-5, 0.00260416674, 0.00026041668 );\n" );
 		AppendIndentation( m_pBufParamCode, &m_nParamCodeLen );
-		StrcatToParamCode( "highp vec4 scB = vec4( -0.020833334, -0.125, 1.0, 0.5 );\n" );			
+		StrcatToParamCode( "vec4 scB = vec4( -0.020833334, -0.125, 1.0, 0.5 );\n" );			
 	}
 
 	// Stick in the sampler mask in hex
@@ -3791,17 +3737,11 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		PrintToBuf( *m_pBufHeaderCode, "//HIGHWATERBONE-%i\n", m_nHighestBoneRegister + 1 );
 	}
 
-	// The constant arrays are declared highp explicitly so that switching the
-	// fragment default to mediump (-gl_mediump_ps) does not quantize the
-	// world-space values carried through pc (eye position, flashlight origin):
-	// FP16 at map-scale distances would make specular/attenuation inputs jump
-	// in ~10-unit steps.  Promoting only the ops that consume these uniforms
-	// is far cheaper than running the whole shader in FP32.
-	PrintToBuf( *m_pBufHeaderCode, "\nuniform highp vec4 %s[%d];\n", m_bVertexShader ? "vc" : "pc", m_nHighestRegister + 1 );
+	PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 %s[%d];\n", m_bVertexShader ? "vc" : "pc", m_nHighestRegister + 1 );
 
 	if ( ( m_nHighestBoneRegister >= 0 ) && ( m_bVertexShader ) && ( m_bGenerateBoneUniformBuffer ) )
 	{
-		PrintToBuf( *m_pBufHeaderCode, "\nuniform highp vec4 %s[%d];\n", "vcbones", m_nHighestBoneRegister + 1 );
+		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 %s[%d];\n", "vcbones", m_nHighestBoneRegister + 1 );
 	}
 
 	if ( m_bVertexShader )
@@ -3811,10 +3751,8 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		PrintToBuf( *m_pBufHeaderCode, "uniform vec4 uClipPlane1;\n" );
 	}
 
-	// Varyings carry highp explicitly so both stages keep matching precision
-	// regardless of the fragment default precision.
-	PrintToBuf( *m_pBufHeaderCode, "varying highp float vClipDist0;\n" );
-	PrintToBuf( *m_pBufHeaderCode, "varying highp float vClipDist1;\n" );
+	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist0;\n" );
+	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist1;\n" );
 				
 	for( int i=0; i<32; i++ )
 	{
@@ -3908,7 +3846,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 
 	if ( m_bNeedsSinCosDeclarations )
 	{
-		StrcatToParamCode( "highp vec3 vSinCosTmp;\n" ); // declare temp used by GLSL sin and cos intrinsics
+		StrcatToParamCode( "vec3 vSinCosTmp;\n" ); // declare temp used by GLSL sin and cos intrinsics
 	}
 
 	// Optional temps needed to emulate d2add instruction in DX pixel shaders
@@ -3989,12 +3927,12 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 					{
 						if ( m_nCentroidMask & ( 0x00000001 << i ) )
 						{
-							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "centroid out highp vec4 oT%d;\n", i ); // centroid varying
+							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "centroid out vec4 oT%d;\n", i ); // centroid varying
 							StrcatToHeaderCode( outTexCoordBuff );
 						}
 						else
 						{
-							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "out highp vec4 oT%d;\n", i );
+							V_snprintf( outTexCoordBuff, sizeof( outTexCoordBuff ), "out vec4 oT%d;\n", i );
 							StrcatToHeaderCode( outTexCoordBuff );
 						}
 					}
