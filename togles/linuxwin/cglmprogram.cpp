@@ -208,6 +208,23 @@ void	CGLMProgram::SetProgramText( char *text )
 	m_text = strdup( text );
 	Assert( m_text != NULL );	
 
+	// -gl_dumpshaders: write the translated GLSL text to shaderdump/ for
+	// debugging generated shaders on device.  The text carries the
+	// "// trans#N label:..." comment identifying the shader.
+	if ( CommandLine()->FindParm( "-gl_dumpshaders" ) )
+	{
+		static int s_nShaderDumpCount = 0;
+		char szPath[256];
+		V_snprintf( szPath, sizeof( szPath ), "shaderdump/%s_%03d.glsl",
+			m_type == kGLMVertexProgram ? "vs" : "ps", s_nShaderDumpCount++ );
+		FILE *pFile = fopen( szPath, "w" );
+		if ( pFile )
+		{
+			fprintf( pFile, "%s", m_text );
+			fclose( pFile );
+		}
+	}
+
 	#if GLMDEBUG
 		// create editable text item, if it does not already exist
 		if (!m_editable)

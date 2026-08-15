@@ -2826,20 +2826,32 @@ void D3DToGL::HandleBinaryOp_GLSL( uint32 nInstruction )
 		int nDestComponents = GetNumSwizzleComponents( sParam1.String() );
 		int nSrcComponents = GetNumSwizzleComponents( sParam2.String() );
 		
-		// All remaining instructions can use GLSL intrinsics like dot() and cross().
-		bool bDoubleClose = OpenIntrinsic( nInstruction, buff, sizeof( buff ), nDestComponents, nSrcComponents );
-
-		if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SGE ) )
+		if ( nInstruction == D3DSIO_POW )
 		{
-			PrintToALUCodeWithIndents( "%s = %s%s >= %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
-		}
-		else if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SLT ) )
-		{
-			PrintToALUCodeWithIndents( "%s = %s%s < %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
+			// Clamp the base to >= 0: in FP16 (mediump) rounding can flip
+			// tiny dot products negative, and pow(negative, y) is NaN in
+			// GLSL, propagating through specular/lighting into garbage
+			// colors.  D3D pow is also undefined for negative bases, so the
+			// clamp only turns NaN into the sensible 0 result.
+			PrintToALUCodeWithIndents( "%s = pow( max( %s, 0.0 ), %s );\n", sParam1.String(), sParam2.String(), sParam3.String() );
 		}
 		else
 		{
-			PrintToALUCodeWithIndents( "%s = %s%s, %s %s;\n", sParam1.String(), buff, sParam2.String(), sParam3.String(), bDoubleClose ? ") )" : ")" );
+			// All remaining instructions can use GLSL intrinsics like dot() and cross().
+			bool bDoubleClose = OpenIntrinsic( nInstruction, buff, sizeof( buff ), nDestComponents, nSrcComponents );
+
+			if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SGE ) )
+			{
+				PrintToALUCodeWithIndents( "%s = %s%s >= %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
+			}
+			else if ( ( nSrcComponents == 1 ) && ( nInstruction == D3DSIO_SLT ) )
+			{
+				PrintToALUCodeWithIndents( "%s = %s%s < %s );\n", sParam1.String(), buff, sParam2.String(), sParam3.String() );
+			}
+			else
+			{
+				PrintToALUCodeWithIndents( "%s = %s%s, %s %s;\n", sParam1.String(), buff, sParam2.String(), sParam3.String(), bDoubleClose ? ") )" : ")" );
+			}
 		}
 	}
 
@@ -2964,7 +2976,11 @@ void D3DToGL::Handle_NRM()
 	}
 
 	CUtlString sSrc = EnsureNumSwizzleComponents( pSrc0Reg, 3 );
-	PrintToALUCodeWithIndents( "%s = normalize( %s );\n", pDestReg, sSrc.String() );
+	// Run the normalize in highp: with mediump the squared length of even a
+	// modestly sized vector can overflow FP16 (max 65504) to infinity,
+	// producing a zero/NaN result.  The input is promoted by the explicit
+	// constructor; the result still lands in the mediump dest register.
+	PrintToALUCodeWithIndents( "%s = normalize( highp vec3( %s ) );\n", pDestReg, sSrc.String() );
 }
 
 void D3DToGL::Handle_UnaryOp( uint32 nInstruction )
@@ -2981,7 +2997,12 @@ void D3DToGL::Handle_UnaryOp( uint32 nInstruction )
 	}
 	else if ( nInstruction == D3DSIO_RSQ )
 	{
-		PrintToALUCodeWithIndents( "%s = inversesqrt( %s );\n", sParam1.String(), sParam2.String() );
+		// Clamp the input to >= 0: in FP16 (mediump) rounding can flip tiny
+		// dot products negative, and inversesqrt(negative) is NaN which
+		// propagates through normalize/lighting into garbage colors.  The
+		// input is semantically a squared length and should never be
+		// negative, so the clamp is a no-op in FP32.
+		PrintToALUCodeWithIndents( "%s = inversesqrt( max( %s, 0.0 ) );\n", sParam1.String(), sParam2.String() );
 	}
 	else if ( nInstruction == D3DSIO_RCP )
 	{
@@ -3735,9 +3756,9 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( m_bNeedsSinCosDeclarations )
 	{
 		AppendIndentation( m_pBufParamCode, &m_nParamCodeLen );
-		StrcatToParamCode( "vec4 scA = vec4( -1.55009923e-6, -2.17013894e-5, 0.00260416674, 0.00026041668 );\n" );
+		StrcatToParamCode( "highp vec4 scA = vec4( -1.55009923e-6, -2.17013894e-5, 0.00260416674, 0.00026041668 );\n" );
 		AppendIndentation( m_pBufParamCode, &m_nParamCodeLen );
-		StrcatToParamCode( "vec4 scB = vec4( -0.020833334, -0.125, 1.0, 0.5 );\n" );			
+		StrcatToParamCode( "highp vec4 scB = vec4( -0.020833334, -0.125, 1.0, 0.5 );\n" );			
 	}
 
 	// Stick in the sampler mask in hex
@@ -3886,7 +3907,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 
 	if ( m_bNeedsSinCosDeclarations )
 	{
-		StrcatToParamCode( "vec3 vSinCosTmp;\n" ); // declare temp used by GLSL sin and cos intrinsics
+		StrcatToParamCode( "highp vec3 vSinCosTmp;\n" ); // declare temp used by GLSL sin and cos intrinsics
 	}
 
 	// Optional temps needed to emulate d2add instruction in DX pixel shaders
