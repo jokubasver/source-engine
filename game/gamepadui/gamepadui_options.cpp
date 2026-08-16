@@ -17,6 +17,7 @@
 #include "filesystem.h"
 #include "utlbuffer.h"
 #include "inputsystem/iinputsystem.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "materialsystem/materialsystem_config.h"
 
 #if defined( USE_SDL )
@@ -36,6 +37,7 @@ void OnResolutionsNeedUpdate( IConVar *var, const char *pOldValue, float flOldVa
 ConVar _gamepadui_water_detail( "_gamepadui_water_detail", "0" );
 ConVar _gamepadui_shadow_detail( "_gamepadui_shadow_detail", "0" );
 ConVar _gamepadui_antialiasing( "_gamepadui_antialiasing", "0" );
+ConVar _gamepadui_filtering( "_gamepadui_filtering", "0" );
 ConVar _gamepadui_aspectratio( "_gamepadui_aspectratio", "0", FCVAR_NONE, "", OnResolutionsNeedUpdate );
 ConVar _gamepadui_displaymode( "_gamepadui_displaymode", "0", FCVAR_NONE, "", OnResolutionsNeedUpdate );
 ConVar _gamepadui_resolution( "_gamepadui_resolution", "0" );
@@ -349,6 +351,11 @@ public:
     const char *GetConVarName() const
     {
         return m_cvar.GetName();
+    }
+
+    void SetConVarName( const char *pszConVarName )
+    {
+        m_cvar.Init( pszConVarName, true );
     }
 
 protected:
@@ -721,6 +728,13 @@ struct AAMode_t
 int g_nNumAAModes = 0;
 AAMode_t g_AAModes[16];
 
+bool IsAnisotropicFilteringSupported()
+{
+    int nReturnCode = 0;
+    IMaterialSystemHardwareConfig *pHardwareConfig = materials->GetHardwareConfig( MATERIALSYSTEM_HARDWARECONFIG_INTERFACE_VERSION, &nReturnCode );
+    return pHardwareConfig && pHardwareConfig->MaximumAnisotropicLevel() > 1;
+}
+
 void InitAAModes()
 {
     static bool s_bAAModesInitialized = false;
@@ -904,6 +918,31 @@ int GetCurrentAntialiasing()
 	return 0;	// Didn't find what we're looking for, so no AA
 }
 
+int GetCurrentFiltering()
+{
+    ConVarRef mat_forceaniso( "mat_forceaniso" );
+    ConVarRef mat_trilinear( "mat_trilinear" );
+
+    // No anisotropic filtering on this GPU (e.g. no GL_EXT_texture_filter_anisotropic on GLES);
+    // never report an aniso state, even if the config has a stale level from other hardware.
+    if ( !IsAnisotropicFilteringSupported() )
+        return mat_trilinear.GetBool() ? 1 : 0;
+
+    int nAnisoLevel = mat_forceaniso.GetInt();
+    if ( nAnisoLevel >= 2 )
+    {
+        // Match to the closest supported option (2/4/8/16), rounding down
+        int nFilter = 2;
+        while ( nFilter < 16 && nAnisoLevel >= ( nFilter << 1 ) )
+            nFilter <<= 1;
+        return nFilter;
+    }
+
+    // The material system clamps mat_forceaniso 0 and 1 to the same level; trilinear
+    // is only enabled through mat_trilinear.
+    return mat_trilinear.GetBool() ? 1 : 0;
+}
+
 int GetCurrentAspectRatio()
 {
     const MaterialSystem_Config_t &config = materials->GetCurrentConfigForVideoCard();
@@ -993,6 +1032,32 @@ void FlushPendingAntialiasing()
 
     if ( mat_aaquality.GetInt() != g_AAModes[ nAAMode ].m_nQualityLevel )
         mat_aaquality.SetValue( g_AAModes[ nAAMode ].m_nQualityLevel );
+}
+
+void FlushPendingFiltering()
+{
+    ConVarRef mat_forceaniso( "mat_forceaniso" );
+    ConVarRef mat_trilinear( "mat_trilinear" );
+
+    // 0 = Bilinear, 1 = Trilinear, 2+ = Aniso. Matches the FilteringMode options in
+    // gamepadui/options.res and the regular GameUI's mapping (OptionsSubVideo).
+    int nFiltering = _gamepadui_filtering.GetInt();
+
+    // No anisotropic filtering on this GPU; resolve any aniso selection to trilinear
+    // (the highest achievable quality) so mat_forceaniso is never set to an unsupported level.
+    if ( !IsAnisotropicFilteringSupported() )
+        nFiltering = Min( nFiltering, 1 );
+
+    bool bTrilinear = ( nFiltering == 1 );
+    int nAnisoLevel = 1;
+    if ( nFiltering >= 2 )
+        nAnisoLevel = nFiltering;
+
+    if ( mat_trilinear.GetBool() != bTrilinear )
+        mat_trilinear.SetValue( bTrilinear );
+
+    if ( mat_forceaniso.GetInt() != nAnisoLevel )
+        mat_forceaniso.SetValue( nAnisoLevel );
 }
 
 void FlushPendingWaterDetail()
@@ -1169,6 +1234,7 @@ void UpdateHelperConvars()
     _gamepadui_water_detail.SetValue( GetCurrentWaterDetail() );
     _gamepadui_shadow_detail.SetValue( GetCurrentShadowDetail() );
     _gamepadui_antialiasing.SetValue( GetCurrentAntialiasing() );
+    _gamepadui_filtering.SetValue( GetCurrentFiltering() );
     _gamepadui_aspectratio.SetValue( GetCurrentAspectRatio() );
     _gamepadui_displaymode.SetValue( GetCurrentDisplayMode() );
     _gamepadui_sound_quality.SetValue( GetCurrentSoundQuality() );
@@ -1184,6 +1250,7 @@ void FlushHelperConVars()
     FlushPendingWaterDetail();
     FlushPendingShadowDetail();
     FlushPendingAntialiasing();
+    FlushPendingFiltering();
     FlushPendingResolution();
     FlushPendingSoundQuality();
     FlushPendingCloseCaptions();
@@ -1238,6 +1305,22 @@ GamepadUIOptionsPanel::GamepadUIOptionsPanel( vgui::Panel* pParent, const char* 
                 pButtons[j - 1]->SetNavDown( pButtons[j] );
             }
             break;
+        }
+    }
+
+    // The FilteringMode wheel in gamepadui/options.res writes mat_forceaniso directly, which can't
+    // express trilinear (that requires mat_trilinear). Re-point it at the _gamepadui_filtering
+    // helper convar so the flush maps the selection to both convars (see FlushPendingFiltering).
+    for ( int i = 0; i < m_nTabCount; i++ )
+    {
+        for ( GamepadUIButton *pButton : m_Tabs[i].pButtons )
+        {
+            GamepadUIConvarButton *pCvarButton = dynamic_cast< GamepadUIConvarButton* >( pButton );
+            if ( pCvarButton && !V_strcmp( pCvarButton->GetConVarName(), "mat_forceaniso" ) )
+            {
+                pCvarButton->SetConVarName( "_gamepadui_filtering" );
+                pCvarButton->SetToDefault();
+            }
         }
     }
 
@@ -1434,11 +1517,14 @@ void GamepadUIOptionsPanel::OnCommand( char const* pCommand )
     }
     else if ( !V_strcmp( pCommand, "action_apply" ) )
     {
-        for ( int i = 0; i < m_Tabs[ GetActiveTab() ].pButtons.Count(); i++ )
+        for ( int i = 0; i < m_nTabCount; i++ )
         {
-            GamepadUIConvarButton *pConVarButton = dynamic_cast< GamepadUIConvarButton* >( m_Tabs[ GetActiveTab() ].pButtons[ i ] );
-            if ( pConVarButton )
-                pConVarButton->UpdateConVar();
+            for ( int j = 0; j < m_Tabs[ i ].pButtons.Count(); j++ )
+            {
+                GamepadUIConvarButton *pConVarButton = dynamic_cast< GamepadUIConvarButton* >( m_Tabs[ i ].pButtons[ j ] );
+                if ( pConVarButton )
+                    pConVarButton->UpdateConVar();
+            }
         }
 
         FlushHelperConVars();
@@ -1683,28 +1769,30 @@ void GamepadUIOptionsPanel::FillInBindings()
 
 void GamepadUIOptionsPanel::ApplyKeyBindings()
 {
-    const int nTab = GetActiveTab();
-    for ( int i = 0; i < m_Tabs[ nTab ].KeysToUnbind.Count(); i++ )
-	{
-	    char buff[256];
-	    Q_snprintf( buff, sizeof(buff), "unbind \"%s\"\n", m_Tabs[ nTab].KeysToUnbind[ i ].String() );
-	    GamepadUI::GetInstance().GetEngineClient()->ClientCmd_Unrestricted( buff );
-	}
-    m_Tabs[ nTab ].KeysToUnbind.RemoveAll();
-
-    for ( GamepadUIButton *pButton : m_Tabs[ nTab ].pButtons )
+    for ( int nTab = 0; nTab < m_nTabCount; nTab++ )
     {
-        GamepadUIKeyButton *pKeyButton = dynamic_cast< GamepadUIKeyButton* >( pButton );
-        if ( !pKeyButton )
-            continue;
+        for ( int i = 0; i < m_Tabs[ nTab ].KeysToUnbind.Count(); i++ )
+	    {
+	        char buff[256];
+	        Q_snprintf( buff, sizeof(buff), "unbind \"%s\"\n", m_Tabs[ nTab ].KeysToUnbind[ i ].String() );
+	        GamepadUI::GetInstance().GetEngineClient()->ClientCmd_Unrestricted( buff );
+	    }
+        m_Tabs[ nTab ].KeysToUnbind.RemoveAll();
 
-        const char *pKey = pKeyButton->GetKey();
-        if ( !pKey )
-            continue;
+        for ( GamepadUIButton *pButton : m_Tabs[ nTab ].pButtons )
+        {
+            GamepadUIKeyButton *pKeyButton = dynamic_cast< GamepadUIKeyButton* >( pButton );
+            if ( !pKeyButton )
+                continue;
 
-	    char buff[256];
-	    Q_snprintf( buff, sizeof(buff), "bind \"%s\" \"%s\"\n", pKey, pKeyButton->GetKeyBinding() );
-        GamepadUI::GetInstance().GetEngineClient()->ClientCmd_Unrestricted( buff );
+            const char *pKey = pKeyButton->GetKey();
+            if ( !pKey )
+                continue;
+
+	        char buff[256];
+	        Q_snprintf( buff, sizeof(buff), "bind \"%s\" \"%s\"\n", pKey, pKeyButton->GetKeyBinding() );
+            GamepadUI::GetInstance().GetEngineClient()->ClientCmd_Unrestricted( buff );
+        }
     }
 }
 
@@ -2094,6 +2182,25 @@ void GamepadUIOptionsPanel::LoadOptionTabs( const char *pszOptionsFile )
                                 UpdateResolutions();
                             }
                         }
+
+                        // FilteringMode is only meaningful up to trilinear on GPUs without
+                        // anisotropic filtering support (e.g. GLES without
+                        // GL_EXT_texture_filter_anisotropic) - drop the aniso options, mirroring
+                        // how InitAAModes only offers MSAA modes the device supports.
+                        if ( !V_strcmp( pszCvar, "mat_forceaniso" ) && !IsAnisotropicFilteringSupported() )
+                        {
+                            CUtlVector< GamepadUIOption > supportedOptions;
+                            for ( int i = 0; i < button->GetOptionCount(); i++ )
+                            {
+                                GamepadUIOption *pOption = button->GetOption( i );
+                                if ( pOption && pOption->nValue < 2 )
+                                    supportedOptions.AddToTail( *pOption );
+                            }
+                            button->ClearOptions();
+                            for ( GamepadUIOption& option : supportedOptions )
+                                button->AddOptionItem( option );
+                        }
+
                         button->SetToDefault();
 
                         m_Tabs[ m_nTabCount ].pButtons.AddToTail( button );
