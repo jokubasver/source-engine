@@ -320,23 +320,7 @@ struct GLMTexSamplingParams
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_S, dxtogl_addressMode[m_packed.m_addressU] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_T, dxtogl_addressMode[m_packed.m_addressV] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
-		GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
-		if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
-		{
-			// On GLES drivers without anisotropic filtering (e.g. Mali-G31 r13p0), POINT mip filter
-			// (D3DSAMP_MIPFILTER=D3DTEXF_POINT, Source's default when mat_trilinear 0) resolves to
-			// GL_*_MIPMAP_NEAREST - a hard pop at each LOD boundary, visible as the "harsh LOD
-			// transition at a spherical distance from the camera" symptom, especially on angled
-			// surfaces (floors / walls) where no aniso is available to mask it. Promote to
-			// _MIPMAP_LINEAR for trilinear-class blending - the only practical fix on a no-aniso GLES
-			// part. The packed engine state is left intact so this is purely a dispatch-time override;
-			// sampler-object hash keys (m_bits) and the engine-facing packed state stay unchanged.
-			if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
-				effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
-			else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
-				effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
-		}
-		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
+		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 		{
@@ -356,6 +340,8 @@ struct GLMTexSamplingParams
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
 		{
 			float effectiveLodBias = m_lodBias;
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+				effectiveLodBias -= 0.5f;	// no aniso on this GPU - bias toward higher-quality mips in all filter modes to reduce distant shimmering (e.g., Mali-G31)
 			gGL->glSamplerParameterf( nSamplerObject, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
 		}
 		gGL->glSamplerParameteri( nSamplerObject, GL_TEXTURE_COMPARE_MODE_ARB, m_packed.m_compareMode ? GL_COMPARE_R_TO_TEXTURE_ARB : GL_NONE );
@@ -402,18 +388,7 @@ struct GLMTexSamplingParams
 			 ( m_packed.m_mipFilter != curState.m_packed.m_mipFilter ) ||
 			 ( m_packed.m_maxAniso != curState.m_packed.m_maxAniso ) )
 		{
-			GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
-			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
-			{
-				// See SetToSamplerObject for rationale: promote POINT mip filter to LINEAR mip
-				// blending on GLES drivers without anisotropic filtering (e.g. Mali-G31), so the
-				// sampler blends across the LOD boundary instead of popping between mips.
-				if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
-					effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
-				else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
-					effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
-			}
-			gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
+			gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 			gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 			if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 			{
@@ -448,8 +423,8 @@ struct GLMTexSamplingParams
 		if ( m_lodBias != curState.m_lodBias )
 		{
 			float effectiveLodBias = m_lodBias;
-			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
-				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+				effectiveLodBias -= 0.5f;	// no aniso on this GPU - bias toward higher-quality mips in all filter modes to reduce distant shimmering (e.g., Mali-G31)
 			gGL->glTexParameterf( target, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
 		}
 
@@ -483,17 +458,7 @@ struct GLMTexSamplingParams
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_S, dxtogl_addressMode[m_packed.m_addressU] );
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_T, dxtogl_addressMode[m_packed.m_addressV] );
 		gGL->glTexParameteri( target, GL_TEXTURE_WRAP_R, dxtogl_addressMode[m_packed.m_addressW] );
-		GLenum effectiveMinFilter = dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter];
-		if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
-		{
-			// See SetToSamplerObject for rationale: promote POINT mip filter to LINEAR mip blending
-			// on GLES drivers without anisotropic filtering (e.g. Mali-G31) to avoid harsh LOD pops.
-			if ( effectiveMinFilter == GL_NEAREST_MIPMAP_NEAREST )
-				effectiveMinFilter = GL_NEAREST_MIPMAP_LINEAR;
-			else if ( effectiveMinFilter == GL_LINEAR_MIPMAP_NEAREST )
-				effectiveMinFilter = GL_LINEAR_MIPMAP_LINEAR;
-		}
-		gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, effectiveMinFilter );
+		gGL->glTexParameteri( target, GL_TEXTURE_MIN_FILTER, dxtogl_minFilter[m_packed.m_minFilter][m_packed.m_mipFilter] );
 		gGL->glTexParameteri( target, GL_TEXTURE_MAG_FILTER, dxtogl_magFilter[m_packed.m_magFilter] );
 		if ( gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
 		{
@@ -513,8 +478,8 @@ struct GLMTexSamplingParams
 		gGL->glTexParameteri( target, GL_TEXTURE_MAX_LOD, m_packed.m_maxLOD );
 		{
 			float effectiveLodBias = m_lodBias;
-			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic && m_packed.m_maxAniso > 1 )
-				effectiveLodBias -= 0.5f;	// compensate for lack of aniso by biasing toward higher-quality mips, reduces distant shimmering on GPUs without anisotropic filtering (e.g., Mali-G31)
+			if ( !gGL->m_bHave_GL_EXT_texture_filter_anisotropic )
+				effectiveLodBias -= 0.5f;	// no aniso on this GPU - bias toward higher-quality mips in all filter modes to reduce distant shimmering (e.g., Mali-G31)
 			gGL->glTexParameterf( target, GL_TEXTURE_LOD_BIAS, effectiveLodBias );
 		}
 		gGL->glTexParameteri( target, GL_TEXTURE_COMPARE_MODE_ARB, m_packed.m_compareMode ? GL_COMPARE_R_TO_TEXTURE_ARB : GL_NONE );
