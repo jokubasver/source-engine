@@ -530,8 +530,14 @@ void CInput::Joystick_Advanced(void)
 
 	// If we have an xcontroller, load the cfg file if it hasn't been loaded.
 	static ConVarRef var( "joy_xcontroller_found" );
-	if ( var.IsValid() && var.GetBool() && in_joystick.GetBool() )
+	if ( var.IsValid() && var.GetBool() )
 	{
+		// The inputsystem auto-enables the joystick at init, but config.cfg executes later and
+		// restores the archived "joystick 0" default, which would otherwise stop the gamepad
+		// profile (360controller.cfg) from ever being applied on a cold start. Re-enable it here.
+		if ( !in_joystick.GetBool() )
+			in_joystick.SetValue( true );
+
 		if ( joy_xcontroller_cfg_loaded.GetInt() < 2 )
 		{
 			engine->ClientCmd_Unrestricted( "exec 360controller.cfg" );
