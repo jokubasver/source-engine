@@ -5997,7 +5997,7 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 		RecordDrawStats( mode, start, end, count );
 
 		GLuint tightStart = start, tightEnd = end;
-		if ( ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
+		if ( pIndexBuf && pIndexBuf->m_bPseudo && ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
 		{
 			const uint16 *pIdx = (const uint16 *)indicesActual;
 			uint16 nMin = 0xFFFF, nMax = 0;

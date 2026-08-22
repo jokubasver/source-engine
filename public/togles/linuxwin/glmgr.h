@@ -2226,9 +2226,9 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 		GLuint tightStart = start, tightEnd = end;
 		// Engine-supplied ranges are often wildly bloated (heavy scene: span 2.36M vs 0.26M
 		// indices = 9x). A tight range lets the Mali tiler fetch only the referenced vertex
-		// blocks instead of the whole window. Scanning count uint16s is far cheaper than the
-		// wasted vertex fetch when the span is sparse.
-		if ( ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
+		// blocks instead of the whole window. Only scan when indices are CPU-readable
+		// (pseudo buffer); regular VBO offsets are GPU addresses and would segfault.
+		if ( pIndexBuf && pIndexBuf->m_bPseudo && ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
 		{
 			const uint16 *pIdx = (const uint16 *)indicesActual;
 			uint16 nMin = 0xFFFF, nMax = 0;
