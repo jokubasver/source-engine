@@ -1865,6 +1865,10 @@ class GLMContext
 		VertexAttribs_t					m_boundVertexAttribs[ kGLMVertexAttributeIndexMax ];	// tracked per attrib for dupe-set-absorb
 		uint							m_lastKnownVertexAttribMask;								// tracked for dupe-enable-absorb
 		int								m_nNumSetVertexAttributes;
+
+		// Staging buffer for merging the pre-bone/post-bone vertex-constant
+		// uploads into a single glUniform4fv (see FlushDrawStates).
+		float							(*m_pVSNonBoneScratch)[4];
 						
 		// FIXME: Remove this, it's no longer used
 		GLMVertexSetup					m_drawVertexSetup;
@@ -1930,6 +1934,10 @@ class GLMContext
 		int									m_nGpuDrawTraceDrawIndex;
 		int								m_nGpuFrameProgramChanges;	// glUseProgram calls this frame
 		int								m_nGpuFrameUniformCalls;	// uniform upload GL calls this frame
+		int								m_nGpuFrameUniformCallsVSNonBone;	// of which plain VS non-bone ranged uploads
+		int								m_nGpuFrameUniformCallsVSMerged;	// of which merged pre+post-bone single uploads
+		int								m_nGpuFrameUniformCallsVSBone;		// of which bone-array uploads
+		int								m_nGpuFrameUniformCallsFS;			// of which fragment uploads
 		int								m_nGpuFrameUniformsSet;		// float4 constants uploaded this frame
 		int								m_nGpuFrameResolves;		// MSAA resolves this frame
 		int								m_nGpuFrameBlits;			// blit operations this frame

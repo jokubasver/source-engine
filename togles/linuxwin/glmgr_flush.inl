@@ -638,40 +638,71 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 #if GL_BATCH_TELEMETRY_ZONES
 				tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "VSNonBoneUniformUpdate %u %u", firstDirtySlot, dirtySlotHighWater );
 #endif
-				int numSlots = dirtySlotHighWater - DXABSTRACT_VS_FIRST_BONE_SLOT;
-				
-				// consts after the bones (c217 onwards), since we use the concatenated destination array vc[], upload these consts starting from vc[58]
-				if( numSlots > 0 )
+
+				// The shader's vc[] array is compacted: vc[0..57] = c0..c57 and
+				// vc[58..] = c217...  When both sides of the (separately
+				// stored) bone region are dirty, the two destination ranges
+				// are adjacent - stage them into one contiguous block and emit
+				// a single glUniform4fv instead of two driver calls.
+				const bool bPreDirty  = ( firstDirtySlot < DXABSTRACT_VS_FIRST_BONE_SLOT );
+				const bool bPostDirty = ( dirtySlotHighWater > DXABSTRACT_VS_FIRST_BONE_SLOT );
+
+				if ( bPreDirty && bPostDirty && m_pVSNonBoneScratch )
 				{
-					gGL->glUniform4fv( m_pBoundPair->m_locVertexParams + DXABSTRACT_VS_FIRST_BONE_SLOT, numSlots, &m_programParamsF[kGLMVertexProgram].m_values[(DXABSTRACT_VS_LAST_BONE_SLOT+1)][0] );
+					const int nPreCount  = DXABSTRACT_VS_FIRST_BONE_SLOT - firstDirtySlot;
+					const int nPostCount = dirtySlotHighWater - DXABSTRACT_VS_FIRST_BONE_SLOT;
+
+					memcpy( m_pVSNonBoneScratch, &m_programParamsF[kGLMVertexProgram].m_values[firstDirtySlot][0], nPreCount * sizeof( m_pVSNonBoneScratch[0] ) );
+					memcpy( m_pVSNonBoneScratch + nPreCount, &m_programParamsF[kGLMVertexProgram].m_values[(DXABSTRACT_VS_LAST_BONE_SLOT+1)][0], nPostCount * sizeof( m_pVSNonBoneScratch[0] ) );
+
+					gGL->glUniform4fv( vconstLoc + firstDirtySlot, nPreCount + nPostCount, &m_pVSNonBoneScratch[0][0] );
 
 					m_nGpuFrameUniformCalls++;
-					m_nGpuFrameUniformsSet += numSlots;
-
-					dirtySlotHighWater = DXABSTRACT_VS_FIRST_BONE_SLOT;
+					m_nGpuFrameUniformsSet += nPreCount + nPostCount;
+					m_nGpuFrameUniformCallsVSMerged++;
 
 					GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
-					GL_BATCH_PERF( m_nTotalVSUniformsSet += numSlots; )
-
-					GL_BATCH_PERF( m_FlushStats.m_nFirstVSConstant = DXABSTRACT_VS_FIRST_BONE_SLOT; )
-					GL_BATCH_PERF( m_FlushStats.m_nNumVSConstants += numSlots; )
+					GL_BATCH_PERF( m_nTotalVSUniformsSet += nPreCount + nPostCount; )
 				}
-				
-				numSlots = dirtySlotHighWater - firstDirtySlot;
-
-				// consts before the bones (c0-c57)
-				if( numSlots > 0 )
+				else
 				{
-					gGL->glUniform4fv( m_pBoundPair->m_locVertexParams + firstDirtySlot, dirtySlotHighWater - firstDirtySlot, &m_programParamsF[kGLMVertexProgram].m_values[firstDirtySlot][0] );
+					int numSlots = dirtySlotHighWater - DXABSTRACT_VS_FIRST_BONE_SLOT;
 
-					m_nGpuFrameUniformCalls++;
-					m_nGpuFrameUniformsSet += dirtySlotHighWater - firstDirtySlot;
+					// consts after the bones (c217 onwards), since we use the concatenated destination array vc[], upload these consts starting from vc[58]
+					if( numSlots > 0 )
+					{
+						gGL->glUniform4fv( m_pBoundPair->m_locVertexParams + DXABSTRACT_VS_FIRST_BONE_SLOT, numSlots, &m_programParamsF[kGLMVertexProgram].m_values[(DXABSTRACT_VS_LAST_BONE_SLOT+1)][0] );
 
-					GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
-					GL_BATCH_PERF( m_nTotalVSUniformsSet += dirtySlotHighWater - firstDirtySlot; )
+						m_nGpuFrameUniformCalls++;
+						m_nGpuFrameUniformsSet += numSlots;
+						m_nGpuFrameUniformCallsVSNonBone++;
 
-					GL_BATCH_PERF( m_FlushStats.m_nFirstVSConstant = firstDirtySlot; )
-					GL_BATCH_PERF( m_FlushStats.m_nNumVSConstants += (dirtySlotHighWater - firstDirtySlot); )
+						dirtySlotHighWater = DXABSTRACT_VS_FIRST_BONE_SLOT;
+
+						GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
+						GL_BATCH_PERF( m_nTotalVSUniformsSet += numSlots; )
+
+						GL_BATCH_PERF( m_FlushStats.m_nFirstVSConstant = DXABSTRACT_VS_FIRST_BONE_SLOT; )
+						GL_BATCH_PERF( m_FlushStats.m_nNumVSConstants += numSlots; )
+					}
+
+					numSlots = dirtySlotHighWater - firstDirtySlot;
+
+					// consts before the bones (c0-c57)
+					if( numSlots > 0 )
+					{
+						gGL->glUniform4fv( m_pBoundPair->m_locVertexParams + firstDirtySlot, numSlots, &m_programParamsF[kGLMVertexProgram].m_values[firstDirtySlot][0] );
+
+						m_nGpuFrameUniformCalls++;
+						m_nGpuFrameUniformsSet += numSlots;
+						m_nGpuFrameUniformCallsVSNonBone++;
+
+						GL_BATCH_PERF( m_nTotalVSUniformCalls++; )
+						GL_BATCH_PERF( m_nTotalVSUniformsSet += numSlots; )
+
+						GL_BATCH_PERF( m_FlushStats.m_nFirstVSConstant = firstDirtySlot; )
+						GL_BATCH_PERF( m_FlushStats.m_nNumVSConstants += numSlots; )
+					}
 				}
 			}
 
@@ -719,6 +750,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 				m_nGpuFrameUniformCalls++;
 				m_nGpuFrameUniformsSet += nNumBoneRegs;
+				m_nGpuFrameUniformCallsVSBone++;
 
 				GL_BATCH_PERF( m_nTotalVSUniformBoneCalls++; )
 				GL_BATCH_PERF( m_nTotalVSUniformsBoneSet += nNumBoneRegs; )
@@ -1009,6 +1041,7 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 				m_nGpuFrameUniformCalls++;
 				m_nGpuFrameUniformsSet += dirtySlotHighWater - firstDirtySlot;
+				m_nGpuFrameUniformCallsFS++;
 
 				GL_BATCH_PERF( m_nTotalPSUniformCalls++; )
 				GL_BATCH_PERF( m_nTotalPSUniformsSet += dirtySlotHighWater - firstDirtySlot; )

@@ -1237,6 +1237,17 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 								blitMask, filter );
 	}
 
+	// TBDR: source has been copied/resolved, discard its tiles on Mali to avoid writeback
+	if ( blitResolves && gGL->glInvalidateFramebuffer )
+	{
+		GLenum discardList[3];
+		int nDiscard = 0;
+		if ( blitMask & GL_COLOR_BUFFER_BIT ) discardList[nDiscard++] = GL_COLOR_ATTACHMENT0;
+		if ( blitMask & GL_DEPTH_BUFFER_BIT ) discardList[nDiscard++] = GL_DEPTH_ATTACHMENT;
+		if ( blitMask & GL_STENCIL_BUFFER_BIT ) discardList[nDiscard++] = GL_STENCIL_ATTACHMENT;
+		if ( nDiscard ) gGL->glInvalidateFramebuffer( GL_READ_FRAMEBUFFER, nDiscard, discardList );
+	}
+
 	//----------------------------------------------------------------- scrub READ and maybe DRAW FBO, and unbind
 
 //	glScrubFBO			( GL_READ_FRAMEBUFFER );
@@ -2280,9 +2291,13 @@ void GLMContext::BeginFrame( void )
 			m_nGpuFrameBlendDraws = 0;
 			m_nGpuFrameBlendTriangles = 0;
 			m_nGpuFrameEarlyZCandidateTriangles = 0;
-			m_nGpuFrameProgramChanges = 0;
-			m_nGpuFrameUniformCalls = 0;
-			m_nGpuFrameUniformsSet = 0;
+ 		m_nGpuFrameProgramChanges = 0;
+		m_nGpuFrameUniformCalls = 0;
+		m_nGpuFrameUniformCallsVSNonBone = 0;
+		m_nGpuFrameUniformCallsVSMerged = 0;
+		m_nGpuFrameUniformCallsVSBone = 0;
+		m_nGpuFrameUniformCallsFS = 0;
+ 		m_nGpuFrameUniformsSet = 0;
 			m_nGpuFrameResolves = 0;
 			m_nGpuFrameBlits = 0;
 			m_nGpuFramePhysicalBlits = 0;
@@ -2636,6 +2651,20 @@ void GLMContext::Present( CGLMTex *tex )
 				// we set showparams.m_noBlit, and just let CocoaMgr handle the swap (flushbuffer / page flip)
 				showparams.m_noBlit = true;
 
+				// TBDR: scene color has been blitted to backbuffer, discard it to avoid tile store on Mali
+				if ( m_drawingFBO && gGL->glInvalidateFramebuffer )
+				{
+					BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER );
+					GLenum att = GL_COLOR_ATTACHMENT0;
+					gGL->glInvalidateFramebuffer( GL_FRAMEBUFFER, 1, &att );
+				}
+				else if ( m_drawingFBO && gGL->glDiscardFramebufferEXT )
+				{
+					BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER );
+					GLenum att = GL_COLOR_ATTACHMENT0;
+					gGL->glDiscardFramebufferEXT( GL_FRAMEBUFFER, 1, &att );
+				}
+
 				BindFBOToCtx( NULL, GL_FRAMEBUFFER );
 			}
 			else
@@ -2775,7 +2804,7 @@ void GLMContext::UpdateGpuTimingReport()
 		else
 			V_strncpy( szGpuLast, "n/a", sizeof(szGpuLast) );
 
-		Msg( "GPU timing: %d frames | CPU %4.2f ms | CPU(preswap) %4.2f ms | swap %4.2f ms | SDLswap %4.2f ms | GPU %s ms | sub %.1f/f (GL %.1f/f, clear %.1f/f, idx %.3fM/f, tri %.3fM/f, span %.3fM/f; alpha %.1f/%.3fM, nocull %.1f/%.3fM, blend %.1f/%.3fM, earlyZcandidate %.3fM) | prog %.1f/f | uni %.1f/f (%.1f v4/f) | resolve %.1f/f | blit %.1f/f (GL %.1f/f, 2step %.1f/f, msaa %.1f/f, scale %.1f/f, back %.1f/f, px %.2fM/f) | last: CPU %4.2f ms, GPU %s ms\n",
+		Msg( "GPU timing: %d frames | CPU %4.2f ms | CPU(preswap) %4.2f ms | swap %4.2f ms | SDLswap %4.2f ms | GPU %s ms | sub %.1f/f (GL %.1f/f, clear %.1f/f, idx %.3fM/f, tri %.3fM/f, span %.3fM/f; alpha %.1f/%.3fM, nocull %.1f/%.3fM, blend %.1f/%.3fM, earlyZcandidate %.3fM) | prog %.1f/f | uni %.1f/f (%.1f v4/f; VSnb %.1f, VSmrg %.1f, VSbone %.1f, FS %.1f) | resolve %.1f/f | blit %.1f/f (GL %.1f/f, 2step %.1f/f, msaa %.1f/f, scale %.1f/f, back %.1f/f, px %.2fM/f) | last: CPU %4.2f ms, GPU %s ms\n",
 			m_nGpuReportFrames,
 			m_flCpuAccumMs / nFrames,
 			m_flCpuPreSwapAccumMs / nFrames,
@@ -2798,6 +2827,10 @@ void GLMContext::UpdateGpuTimingReport()
 			(double)m_nGpuFrameProgramChanges / nFrames,
 			(double)m_nGpuFrameUniformCalls / nFrames,
 			(double)m_nGpuFrameUniformsSet / nFrames,
+			(double)m_nGpuFrameUniformCallsVSNonBone / nFrames,
+			(double)m_nGpuFrameUniformCallsVSMerged / nFrames,
+			(double)m_nGpuFrameUniformCallsVSBone / nFrames,
+			(double)m_nGpuFrameUniformCallsFS / nFrames,
 			(double)m_nGpuFrameResolves / nFrames,
 			(double)m_nGpuFrameBlits / nFrames,
 			(double)m_nGpuFramePhysicalBlits / nFrames,
@@ -2829,6 +2862,10 @@ void GLMContext::UpdateGpuTimingReport()
 		m_nGpuFrameEarlyZCandidateTriangles = 0;
 		m_nGpuFrameProgramChanges = 0;
 		m_nGpuFrameUniformCalls = 0;
+		m_nGpuFrameUniformCallsVSNonBone = 0;
+		m_nGpuFrameUniformCallsVSMerged = 0;
+		m_nGpuFrameUniformCallsVSBone = 0;
+		m_nGpuFrameUniformCallsFS = 0;
 		m_nGpuFrameUniformsSet = 0;
 		m_nGpuFrameResolves = 0;
 		m_nGpuFrameBlits = 0;
@@ -3054,6 +3091,10 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nGpuDrawTraceDrawIndex = 0;
 	m_nGpuFrameProgramChanges = 0;
 	m_nGpuFrameUniformCalls = 0;
+	m_nGpuFrameUniformCallsVSNonBone = 0;
+	m_nGpuFrameUniformCallsVSMerged = 0;
+	m_nGpuFrameUniformCallsVSBone = 0;
+	m_nGpuFrameUniformCallsFS = 0;
 	m_nGpuFrameUniformsSet = 0;
 	m_nGpuFrameResolves = 0;
 	m_nGpuFrameBlits = 0;
@@ -3065,6 +3106,8 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 	m_nGpuFrameBlitPixels = 0;
 
 	ClearCurAttribs();
+
+	m_pVSNonBoneScratch = (float ( * )[4] )malloc( kGLMProgramParamFloat4Limit * sizeof( m_pVSNonBoneScratch[0] ) );
 
 	m_nCurPersistentBuffer = 0;
 	if ( gGL->m_bHave_GL_EXT_buffer_storage )
@@ -3531,6 +3574,9 @@ GLMContext::~GLMContext	()
 	}
 	m_texScratchPool.Purge();
 	m_texScratchPoolBytes = 0;
+
+	free( m_pVSNonBoneScratch );
+	m_pVSNonBoneScratch = NULL;
 
 	DecrementWindowRefCount();
 }
