@@ -1952,13 +1952,15 @@ void GLMContext::SetDrawingLang( EGLMProgramLang lang, bool immediate )
 	}
 }
 
-void GLMContext::LinkShaderPair( CGLMProgram *vp, CGLMProgram *fp )
+void GLMContext::LinkShaderPair( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, bool bPreload )
 {
 	if ( (m_pairCache) && (m_drawingLang==kGLMGLSL) && (vp) && (fp) )
 	{
-		CGLMShaderPair	*pair = m_pairCache->SelectShaderPair( vp, fp, 0 );
+		// Explicit preload links carry combos proven hot in a previous session,
+		// so materialize their variants immediately instead of deferring.
+		CGLMShaderPair	*pair = m_pairCache->SelectShaderPair( vp, fp, extraKeyBits, bPreload );
 		(void)pair;
-		
+
 		Assert( pair != NULL );
 
 		NullProgram();	// clear out any binds that were done - next draw will set it right

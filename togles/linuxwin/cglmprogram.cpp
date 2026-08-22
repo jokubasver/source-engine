@@ -321,6 +321,28 @@ void CGLMProgram::DeleteGLSLShaderVariants( void )
 	m_failedGLSLShaderVariantMask = 0;
 }
 
+void CGLMProgram::ReleaseLinkedShaderObject( GLuint nShaderObject )
+{
+	if ( !nShaderObject )
+		return;
+
+	// The base full-feature object stays cached for relink/fallback paths.
+	if ( nShaderObject == m_descs[kGLMGLSL].m_object.glsl )
+		return;
+
+	for ( uint i = 0; i < ARRAYSIZE( m_glslShaderVariants ); ++i )
+	{
+		if ( m_glslShaderVariants[i] == nShaderObject )
+		{
+			// Safe even if another live program still has it attached: GL
+			// defers the actual deletion until the last detach.
+			gGL->glDeleteShader( nShaderObject );
+			m_glslShaderVariants[i] = 0;
+			return;
+		}
+	}
+}
+
 GLuint CGLMProgram::GetGLSLShaderVariant( uint extraKeyBits )
 {
 	GLMShaderDesc *pDesc = &m_descs[kGLMGLSL];
@@ -1053,6 +1075,15 @@ bool CGLMShaderPair::ValidateProgramPair()
 // is the dominant cost on Mali's slow compiler.
 static ConVar gl_program_binary_cache( "gl_program_binary_cache", "1", FCVAR_NONE, "Cache compiled GL program binaries to disk to skip relinking on startup (0=off, 1=on, 2=on+verbose)" );
 
+// Hysteresis for state-specialized shader variants.  The all-disabled fragment
+// combo (hot opaque path) and the full-feature base are materialized
+// immediately; intermediate combos (alpha-test-only, clip-only) serve the
+// full-feature pair - which is correct under any renderstate, matching
+// pre-variant behavior - until requested this many times.  Bounds compile/link
+// work and driver memory on low-RAM TBDR devices where rare state combos would
+// otherwise hitch a frame mid-gameplay.  0 disables deferral.
+static ConVar gl_shader_variant_hysteresis( "gl_shader_variant_hysteresis", "8", FCVAR_NONE, "Requests before an intermediate alpha-test/clip-plane shader variant is compiled and linked (0 = always compile immediately)" );
+
 static int s_nProgramBinaryHits = 0;
 static int s_nProgramBinaryMisses = 0;
 static int s_nProgramBinarySaves = 0;
@@ -1081,6 +1112,103 @@ static void ReportProgramBinaryCacheStats( const char *pszPairName, bool bHit, u
 }
 
 #define GL_PROGRAM_BINARY_CACHE_DIR "glshadercache"
+
+// Program binaries are fetched from the driver immediately after a successful
+// link, but the file write is queued: synchronous SD-card writes during
+// gameplay caused visible hitching on low-end ARM devices.  The queue is
+// drained by ToglFlushProgramBinarySaves() from frame/load boundaries, or
+// inline once it exceeds gl_binary_save_queue_mb.
+struct QueuedBinarySave_t
+{
+	MD5Value_t	m_hash;
+	GLenum		m_binaryFormat;
+	GLsizei		m_nBytes;
+	void		*m_pData;
+};
+
+static void ShaderPairCacheFileName( const MD5Value_t &hash, char *out, int outLen );
+static void SaveCachedProgramBinary( GLuint program, const MD5Value_t &hash );
+
+static CUtlVector<QueuedBinarySave_t> s_queuedBinarySaves;
+static size_t s_nQueuedBinaryBytes = 0;
+
+// Flush cap in MB; 0 disables queuing entirely (write immediately).
+static ConVar gl_binary_save_queue_mb( "gl_binary_save_queue_mb", "2", FCVAR_NONE, "MB of program binaries to buffer before flushing shader-cache writes to disk (0 = write immediately)" );
+
+static void WriteQueuedBinarySave( const QueuedBinarySave_t &save )
+{
+	char path[MAX_PATH];
+	ShaderPairCacheFileName( save.m_hash, path, sizeof(path) );
+	FileHandle_t fh = g_pFullFileSystem->Open( path, "wb", "MOD" );
+	if ( fh != FILESYSTEM_INVALID_HANDLE )
+	{
+		g_pFullFileSystem->Write( &save.m_binaryFormat, sizeof(save.m_binaryFormat), fh );
+		g_pFullFileSystem->Write( save.m_pData, save.m_nBytes, fh );
+		g_pFullFileSystem->Close( fh );
+	}
+}
+
+void ToglFlushProgramBinarySaves( void )
+{
+	int nCount = s_queuedBinarySaves.Count();
+	if ( !nCount )
+		return;
+
+	g_pFullFileSystem->CreateDirHierarchy( GL_PROGRAM_BINARY_CACHE_DIR, "MOD" );
+
+	for ( int i = 0; i < nCount; ++i )
+	{
+		WriteQueuedBinarySave( s_queuedBinarySaves[i] );
+		free( s_queuedBinarySaves[i].m_pData );
+	}
+
+	s_queuedBinarySaves.RemoveAll();
+	s_nQueuedBinaryBytes = 0;
+}
+
+static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
+{
+	if ( !gGL->glGetProgramBinary )
+		return;
+
+	const int nCapBytes = gl_binary_save_queue_mb.GetInt() * 1024 * 1024;
+	if ( nCapBytes <= 0 && s_queuedBinarySaves.Count() == 0 )
+	{
+		// Queuing disabled: fall back to writing immediately.
+		SaveCachedProgramBinary( program, hash );
+		return;
+	}
+
+	QueuedBinarySave_t save;
+	save.m_hash = hash;
+	save.m_nBytes = 0;
+	save.m_binaryFormat = 0;
+	save.m_pData = NULL;
+
+	GLint binLen = 0;
+	gGL->glGetProgramiv( program, GL_PROGRAM_BINARY_LENGTH, &binLen );
+	if ( binLen <= 0 )
+		return;
+
+	save.m_pData = malloc( binLen );
+	if ( !save.m_pData )
+		return;
+
+	gGL->glGetProgramBinary( program, binLen, &save.m_nBytes, &save.m_binaryFormat, save.m_pData );
+	if ( save.m_nBytes <= 0 )
+	{
+		free( save.m_pData );
+		return;
+	}
+
+	s_queuedBinarySaves.AddToTail( save );
+	s_nQueuedBinaryBytes += (size_t)save.m_nBytes;
+
+	if ( nCapBytes > 0 && s_nQueuedBinaryBytes >= (size_t)nCapBytes )
+	{
+		ToglFlushProgramBinarySaves();
+	}
+}
 
 static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, MD5Value_t &outHash )
 {
@@ -1387,9 +1515,24 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp, uint extr
 				{
 					MD5Value_t pairHash;
 					ComputeShaderPairHash( vp, fp, m_extraKeyBits, pairHash );
-					SaveCachedProgramBinary( m_program, pairHash );
+					QueueCachedProgramBinary( m_program, pairHash );
 					++s_nProgramBinarySaves;
 				}
+
+				// The linked program retains its microcode independently of its
+				// attached shader objects, so detach them right away.  This
+				// lets the driver reclaim compiler artifacts sooner, which
+				// matters on low-RAM TBDR devices.  Non-base variant objects
+				// are also deleted from their owning program's variant cache;
+				// GL keeps the underlying object alive while any other program
+				// still references it.
+				gGL->glDetachShader( m_program, m_vertexShaderObject );
+				vp->ReleaseLinkedShaderObject( m_vertexShaderObject );
+				m_vertexShaderObject = 0;
+
+				gGL->glDetachShader( m_program, m_fragmentShaderObject );
+				fp->ReleaseLinkedShaderObject( m_fragmentShaderObject );
+				m_fragmentShaderObject = 0;
 			}
 			
 			m_bCheckLinkStatus = true;
@@ -1578,8 +1721,20 @@ static void WriteToProgramCache( CGLMShaderPair *pair )
 	pProgramCache->deleteThis();
 }
 
+// Fragment-stage combos between "all disabled" (the hot opaque path) and the
+// full-feature base never pay an immediate compile; they ride the fallback
+// pair until proven hot.  Vertex stage only keys on clip planes whose disabled
+// variant is the common case, so it is always immediate.
+static bool IsDeferredShaderVariant( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits )
+{
+	(void)vp;
+	return ( fp->m_type == kGLMFragmentProgram )
+		&& ( extraKeyBits != 0 )
+		&& ( extraKeyBits != kGLMShaderPairExtraKeyMask );
+}
+
 // Calls glUseProgram() as a side effect
-CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, int rowIndex )
+CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, int rowIndex, bool bForceMaterialize )
 {
 	CGLMShaderPair	*result = NULL;
 		
@@ -1620,14 +1775,14 @@ CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, 
 	{
 		// evict the oldest way
 		Assert( oldestway >= 0);	// better not come back negative
-			
+
 		CGLMPairCacheEntry *evict = row + oldestway;
-			
-		Assert( evict->m_pair != NULL );
-		Assert( evict->m_pair != m_ctx->m_pBoundPair );	// just check
-			
+
+		Assert( evict->m_lastMark != 0 );
+		Assert( !evict->m_pair || ( evict->m_pair != m_ctx->m_pBoundPair ) );	// just check
+
 		///////////////////////FIXME may need to do a shoot-down if the pair being evicted is currently active in the context
-			
+
 		m_evictions[ rowIndex ]++;
 
 		// log eviction if desired
@@ -1650,14 +1805,37 @@ CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, 
 
 	// make the new entry
 	CGLMPairCacheEntry *newentry = row + destway;
-		
+
 	newentry->m_lastMark = m_mark;
 	newentry->m_vertexProg = vp;
 	newentry->m_fragmentProg = fp;
 	newentry->m_extraKeyBits = extraKeyBits;
-	newentry->m_pair = new CGLMShaderPair( m_ctx );
-	Assert( newentry->m_pair );
-	newentry->m_pair->SetProgramPair( vp, fp, extraKeyBits );
+	newentry->m_nDeferredRequests = 0;
+
+	if ( !bForceMaterialize && gl_shader_variant_hysteresis.GetInt() > 0 && IsDeferredShaderVariant( vp, fp, extraKeyBits ) )
+	{
+		// Defer this combo: remember it pair-less and serve the full-feature
+		// pair (correct under any renderstate) until the combo proves hot.
+		// Avoids a synchronous compile+link hitch on first mid-gameplay use of
+		// a rare state combination.
+		newentry->m_pair = NULL;
+		newentry->m_nDeferredRequests = 1;
+
+		if (loglevel >= 2)  // say a little bit more
+		{
+			printf("\nSSP: deferring state variant key 0x%X", extraKeyBits );
+		}
+
+		result = SelectShaderPair( vp, fp, kGLMShaderPairExtraKeyMask );
+	}
+	else
+	{
+		newentry->m_pair = new CGLMShaderPair( m_ctx );
+		Assert( newentry->m_pair );
+		newentry->m_pair->SetProgramPair( vp, fp, extraKeyBits );
+
+		result = newentry->m_pair;
+	}
 
 	if (loglevel >= 2)  // say a little bit more
 	{
@@ -1676,14 +1854,44 @@ CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, 
 		m_mark = 1;
 	}
 
-	result = newentry->m_pair;
-
-	if (glm_cacheprograms.GetInt())
+	if (glm_cacheprograms.GetInt() && newentry->m_pair)
 	{
 		WriteToProgramCache( newentry->m_pair );
 	}
-		
+
 	return result;
+}
+
+// A deferred entry was hit again: count the request and either materialize the
+// real pair (combo proven hot, or forced by the startup preload) or keep
+// serving the full-feature fallback pair, which is functionally correct under
+// any renderstate.
+CGLMShaderPair *CGLMShaderPairCache::ResolveDeferredEntry( CGLMPairCacheEntry *entry, bool bForceMaterialize )
+{
+	Assert( entry->m_lastMark != 0 );
+	Assert( entry->m_pair == NULL );
+
+	CGLMProgram *vp = entry->m_vertexProg;
+	CGLMProgram *fp = entry->m_fragmentProg;
+
+	++entry->m_nDeferredRequests;
+
+	const int nThreshold = gl_shader_variant_hysteresis.GetInt();
+	if ( !bForceMaterialize && nThreshold > 0 && entry->m_nDeferredRequests < (uint)nThreshold )
+	{
+		return SelectShaderPair( vp, fp, kGLMShaderPairExtraKeyMask );
+	}
+
+	entry->m_pair = new CGLMShaderPair( m_ctx );
+	Assert( entry->m_pair );
+	entry->m_pair->SetProgramPair( vp, fp, entry->m_extraKeyBits );
+
+	if ( glm_cacheprograms.GetInt() )
+	{
+		WriteToProgramCache( entry->m_pair );
+	}
+
+	return entry->m_pair;
 }
 
 void	CGLMShaderPairCache::QueryShaderPair( int index, GLMShaderPairInfo *infoOut )
@@ -1711,6 +1919,8 @@ void	CGLMShaderPairCache::QueryShaderPair( int index, GLMShaderPairInfo *infoOut
 			entry->m_pair->m_vertexProg->GetLabelIndexCombo		( infoOut->m_vsName, sizeof(infoOut->m_vsName), &infoOut->m_vsStaticIndex, &infoOut->m_vsDynamicIndex );
 			entry->m_pair->m_fragmentProg->GetLabelIndexCombo	( infoOut->m_psName, sizeof(infoOut->m_psName), &infoOut->m_psStaticIndex, &infoOut->m_psDynamicIndex );
 
+			infoOut->m_extraKeyBits = entry->m_pair->m_extraKeyBits;
+
 			infoOut->m_status = 1;
 		}
 		else
@@ -1725,14 +1935,14 @@ void	CGLMShaderPairCache::QueryShaderPair( int index, GLMShaderPairInfo *infoOut
 bool CGLMShaderPairCache::PurgePairsWithShader( CGLMProgram *prog )
 {
 	bool result = false;
-	
+
 	// walk all rows*ways
 	int limit = m_rows * m_ways;
 	for( int i=0; i < limit; i++)
 	{
 		CGLMPairCacheEntry *entry = &m_entries[i];
-		
-		if (entry->m_pair)
+
+		if (entry->m_lastMark)		// occupied slot: live pair or deferred combo
 		{
 			//scrub it, if not currently bound, and if the supplied shader matches either stage
 			if ( (entry->m_vertexProg==prog) || (entry->m_fragmentProg==prog) )
@@ -1754,17 +1964,17 @@ bool CGLMShaderPairCache::PurgePairsWithShader( CGLMProgram *prog )
 bool CGLMShaderPairCache::Purge( void )
 {
 	bool result = false;
-	
+
 	// walk all rows*ways
 	int limit = m_rows * m_ways;
 	for( int i=0; i < limit; i++)
 	{
 		CGLMPairCacheEntry *entry = &m_entries[i];
-		
-		if (entry->m_pair)
+
+		if (entry->m_lastMark)		// occupied slot
 		{
 			//scrub it, unless the pair is the currently bound pair in our parent glm context
-			if (entry->m_pair != m_ctx->m_pBoundPair)
+			if ( !entry->m_pair || ( entry->m_pair != m_ctx->m_pBoundPair ) )
 			{
 				delete entry->m_pair;
 				memset( entry, 0, sizeof(*entry) );

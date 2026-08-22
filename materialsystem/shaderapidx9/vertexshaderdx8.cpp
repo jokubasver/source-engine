@@ -166,6 +166,10 @@ static FILE *GetDebugFileHandle( void )
 
 	ConVar mat_autosave_glshaders( "mat_autosave_glshaders", "1" );
 	ConVar mat_autoload_glshaders( "mat_autoload_glshaders", "1" );
+	// Interval in seconds between automatic glshaders.cfg saves while running.
+	// Killed sessions (OOM on low-RAM devices) previously lost every shader
+	// pair discovered since launch because saves only happened at clean exit.
+	ConVar gl_shader_cache_autosave_interval( "gl_shader_cache_autosave_interval", "30", FCVAR_NONE, "Seconds between automatic glshaders.cfg saves (0 = only save at shutdown)" );
 #endif
 //-----------------------------------------------------------------------------
 // Explicit instantiation of shader buffer implementation
@@ -585,6 +589,7 @@ public:
 
 #if defined( DX_TO_GL_ABSTRACTION )
 	virtual void				DoStartupShaderPreloading();
+	virtual void				FrameSaveMaintenance( float flCurTime );
 #endif
 
 	static void					QueuedLoaderCallback( void *pContext, void *pContext2, const void *pData, int nSize, LoaderError_t loaderError );
@@ -944,6 +949,7 @@ void CShaderManager::Shutdown()
 	{
 		SaveShaderCache("glshaders.cfg");
 	}
+	ToglFlushProgramBinarySaves();
 #endif
 
 	DestroyAllShaders();
@@ -2962,6 +2968,10 @@ void	CShaderManager::SaveShaderCache( char *cacheName )
 
 				pProgramKey->SetInt		( "vs_dynamic", info.m_vsDynamicIndex );
 				pProgramKey->SetInt		( "ps_dynamic", info.m_psDynamicIndex );
+
+				// State-variant key (alpha-test/clip-plane specialization).  Older
+				// cache files simply lack this field; loaders treat it as 0.
+				pProgramKey->SetInt		( "extra", (int)info.m_extraKeyBits );
 			}
 		}
 		i++;
@@ -3034,6 +3044,13 @@ bool	CShaderManager::LoadShaderCache( char *cacheName )
 			continue;
 		int nPixelShaderDynamicIndex = pValue->GetInt();
 
+		// Optional 7th value: state-variant extra key bits.  Absent in cache
+		// files written before variant-aware pairs existed.
+		uint nExtraKeyBits = 0;
+		pValue = pValue->GetNextValue();
+		if ( pValue )
+			nExtraKeyBits = (uint)pValue->GetInt();
+
 		ShaderLookup_t vshLookup;
 		vshLookup.m_Name = m_ShaderSymbolTable.AddString( pVertexShaderName ); // TODO: use String() here and catch this odd case
 		vshLookup.m_nStaticIndex = nVertexShaderStaticIndex;
@@ -3083,7 +3100,21 @@ bool	CShaderManager::LoadShaderCache( char *cacheName )
 
 					if ( ( hardwareVertexShader != INVALID_HARDWARE_SHADER ) && ( hardwarePixelShader != INVALID_HARDWARE_SHADER ) )
 					{
-						if ( S_OK != Dx9Device()->LinkShaderPair( (IDirect3DVertexShader9 *)hardwareVertexShader, (IDirect3DPixelShader9 *)hardwarePixelShader ) )
+						HRESULT hrLink;
+						if ( nExtraKeyBits != 0 )
+						{
+							// State-variant pair: bPreload materializes the
+							// specialized shaders immediately, bypassing the
+							// in-game hysteresis.  This is a combo proven hot
+							// in a previous session.
+							hrLink = Dx9Device()->LinkShaderPairWithKey( (IDirect3DVertexShader9 *)hardwareVertexShader, (IDirect3DPixelShader9 *)hardwarePixelShader, nExtraKeyBits, /*bPreload*/true );
+						}
+						else
+						{
+							hrLink = Dx9Device()->LinkShaderPair( (IDirect3DVertexShader9 *)hardwareVertexShader, (IDirect3DPixelShader9 *)hardwarePixelShader );
+						}
+
+						if ( S_OK != hrLink )
 						{
 							Warning( "Could not link OpenGL shaders: %s (%d, %d) : %s (%d, %d)\n", pVertexShaderName, nVertexShaderStaticIndex, nVertexShaderDynamicIndex, pPixelShaderName, nPixelShaderStaticIndex, nPixelShaderDynamicIndex );
 						}
@@ -3226,7 +3257,7 @@ void CShaderManager::PurgeUnusedVertexAndPixelShaders()
 		}
 		return;	// don't purge shaders, it's too costly to put them back
 	#endif
-	
+
 	// iterate vertex shaders
 	for ( VertexShader_t vshIndex = m_VertexShaderDict.Head(); vshIndex != m_VertexShaderDict.InvalidIndex(); )
 	{
@@ -3255,6 +3286,53 @@ void CShaderManager::PurgeUnusedVertexAndPixelShaders()
 		pshIndex = next;
 	}
 }
+
+#ifdef DX_TO_GL_ABSTRACTION
+
+//-----------------------------------------------------------------------------
+// Per-frame maintenance (called from the device present path): periodically
+// persist glshaders.cfg so an OOM kill loses at most one interval of shader
+// discovery, and drain the queued program-binary disk writes.
+//-----------------------------------------------------------------------------
+void CShaderManager::FrameSaveMaintenance( float flCurTime )
+{
+	static float s_flLastMaintenanceTime = 0.0f;
+	static int s_nLastSavedPairCount = -1;
+
+	const int nInterval = gl_shader_cache_autosave_interval.GetInt();
+	if ( nInterval > 0 && mat_autosave_glshaders.GetInt() &&
+		( flCurTime - s_flLastMaintenanceTime ) >= (float)nInterval )
+	{
+		s_flLastMaintenanceTime = flCurTime;
+
+		if ( Dx9Device() )
+		{
+			// Count live pairs; only rewrite the file when the population
+			// actually changed since the last save.
+			int nCount = 0;
+			for ( int i = 0;; ++i )
+			{
+				GLMShaderPairInfo info;
+				Dx9Device()->QueryShaderPair( i, &info );
+				if ( info.m_status < 0 )
+					break;
+				if ( info.m_status == 1 )
+					++nCount;
+			}
+
+			if ( nCount > 0 && nCount != s_nLastSavedPairCount )
+			{
+				SaveShaderCache( "glshaders.cfg" );
+				s_nLastSavedPairCount = nCount;
+			}
+		}
+	}
+
+	// Cheap when empty; keeps SD-card binary writes off the draw loop.
+	ToglFlushProgramBinarySaves();
+}
+
+#endif // DX_TO_GL_ABSTRACTION
 
 
 

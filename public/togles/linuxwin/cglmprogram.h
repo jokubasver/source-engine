@@ -159,6 +159,11 @@ public:
 	bool	CheckValidity			( EGLMProgramLang lang );
 	GLuint	GetGLSLShaderVariant	( uint extraKeyBits );
 	void	DeleteGLSLShaderVariants( void );
+	void	ReleaseLinkedShaderObject( GLuint nShaderObject );
+		// After a successful program link the attached shader objects can be
+		// detached by the caller; this additionally deletes non-base state
+		// variant objects from m_glslShaderVariants so the driver can reclaim
+		// them (base full-feature object is kept for relink/fallback).
 
 	void	LogSlow					( EGLMProgramLang lang );	// detailed spew when called for first time; one liner or perhaps silence after that
 	
@@ -227,6 +232,11 @@ struct GLMShaderPairInfo
 	char	m_psName[ 128 ];
 	int		m_psStaticIndex;
 	int		m_psDynamicIndex;
+
+	// State-variant key bits this pair was linked with (EGLMShaderPairExtraKeyBits).
+	// Persisted alongside the pair tuple so specialized pairs can be prewarmed at
+	// startup instead of being compiled lazily on first mid-gameplay use.
+	uint	m_extraKeyBits;
 };
 
 class CGLMShaderPair					// a container for a linked GLSL shader pair, and metadata obtained post-link
@@ -370,7 +380,8 @@ struct CGLMPairCacheEntry
 	CGLMProgram		*m_vertexProg;
 	CGLMProgram		*m_fragmentProg;
 	uint			m_extraKeyBits;
-	CGLMShaderPair	*m_pair;
+	CGLMShaderPair	*m_pair;				// NULL on a deferred (hysteresis) entry: combo seen but not yet materialized
+	uint			m_nDeferredRequests;	// SelectShaderPair requests seen since this deferred entry was created
 };
 
 class CGLMShaderPairCache				// cache for linked GLSL shader pairs
@@ -388,7 +399,7 @@ protected:
 	CGLMShaderPairCache( GLMContext *ctx  );
 	~CGLMShaderPairCache( );	
 
-	FORCEINLINE CGLMShaderPair *SelectShaderPair	( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits );
+	FORCEINLINE CGLMShaderPair *SelectShaderPair	( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, bool bForceMaterialize = false );
 	void			QueryShaderPair		( int index, GLMShaderPairInfo *infoOut );
 	
 	// shoot down linked pairs that use the program in the arg
@@ -406,10 +417,14 @@ protected:
 
 	FORCEINLINE uint HashRowIndex( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits ) const;
 	FORCEINLINE CGLMPairCacheEntry*	HashRowPtr( uint hashRowIndex ) const;
-	
+
 	FORCEINLINE void HashRowProbe( CGLMPairCacheEntry *row, CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, int &hitway, int &emptyway, int &oldestway );
-		
-	CGLMShaderPair *SelectShaderPairInternal( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, int rowIndex );
+
+	CGLMShaderPair *SelectShaderPairInternal( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, int rowIndex, bool bForceMaterialize );
+	CGLMShaderPair *ResolveDeferredEntry( CGLMPairCacheEntry *entry, bool bForceMaterialize );
+	// Deferred entries hold a combo that has been requested but not yet materialized
+	// (hysteresis).  Serve the full-feature fallback pair until the combo proves hot.
+	// bForceMaterialize bypasses the hysteresis (used by the startup preload path).
 	//===============================
 
 	// common stuff
@@ -486,13 +501,13 @@ FORCEINLINE void CGLMShaderPairCache::HashRowProbe( CGLMPairCacheEntry *row, CGL
 	}
 }
 
-FORCEINLINE CGLMShaderPair *CGLMShaderPairCache::SelectShaderPair( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits )
+FORCEINLINE CGLMShaderPair *CGLMShaderPairCache::SelectShaderPair( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, bool bForceMaterialize )
 {
 	// select row where pair would be found if it exists
 	uint rowIndex = HashRowIndex( vp, fp, extraKeyBits );
 
 	CGLMPairCacheEntry *pCursor = HashRowPtr( rowIndex );
-	
+
 	if ( ( pCursor->m_fragmentProg != fp ) || ( pCursor->m_vertexProg != vp ) || ( pCursor->m_extraKeyBits != extraKeyBits ) )
 	{
 		CGLMPairCacheEntry *pLastCursor = pCursor + m_ways;
@@ -505,13 +520,19 @@ FORCEINLINE CGLMShaderPair *CGLMShaderPairCache::SelectShaderPair( CGLMProgram *
 				break;
 			++pCursor;
 		};
-	
+
 		if ( pCursor == pLastCursor )
-			return SelectShaderPairInternal( vp, fp, extraKeyBits, rowIndex );
+			return SelectShaderPairInternal( vp, fp, extraKeyBits, rowIndex, bForceMaterialize );
 	}
-		
+
 	// found it.  mark it and return
 	pCursor->m_lastMark = m_mark++;
+
+	if ( !pCursor->m_pair )
+	{
+		// deferred (hysteresis) entry: combo seen again; promote or serve fallback
+		return ResolveDeferredEntry( pCursor, bForceMaterialize );
+	}
 
 #if GL_SHADER_PAIR_CACHE_STATS
 	// count the hit

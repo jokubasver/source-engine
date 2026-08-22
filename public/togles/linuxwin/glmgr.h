@@ -1379,7 +1379,7 @@ class GLMContext
 		
 		void	SetDrawingLang( EGLMProgramLang lang, bool immediate=false );	// choose ARB or GLSL.  immediate=false defers lang change to top of frame
 		
-		void	LinkShaderPair( CGLMProgram *vp, CGLMProgram *fp );			// ensure this combo has been linked and is in the GLSL pair cache
+		void	LinkShaderPair( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits = 0, bool bPreload = false );			// ensure this combo has been linked and is in the GLSL pair cache; bPreload (startup path) materializes variants immediately, bypassing hysteresis
 		void	ValidateShaderPair( CGLMProgram *vp, CGLMProgram *fp );
 		void	ClearShaderPairCache( void );								// call this to shoot down all the linked pairs
 		void	QueryShaderPair( int index, GLMShaderPairInfo *infoOut );	// this lets you query the shader pair cache for saving its state

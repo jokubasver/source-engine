@@ -4643,6 +4643,17 @@ HRESULT IDirect3DDevice9::LinkShaderPair( IDirect3DVertexShader9* vs, IDirect3DP
 	return S_OK;
 }
 
+HRESULT IDirect3DDevice9::LinkShaderPairWithKey( IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps, uint32 nExtraKeyBits, bool bPreload )
+{
+	GL_BATCH_PERF_CALL_TIMER;
+	// these are really GLSL "shaders" not "programs" but the old reference to "program" persists due to the assembler heritage
+	if (vs->m_vtxProgram && ps->m_pixProgram)
+	{
+		m_ctx->LinkShaderPair( vs->m_vtxProgram, ps->m_pixProgram, nExtraKeyBits, bPreload );
+	}
+	return S_OK;
+}
+
 HRESULT IDirect3DDevice9::ValidateShaderPair( IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps )
 {
 	GL_BATCH_PERF_CALL_TIMER;

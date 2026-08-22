@@ -114,6 +114,10 @@ public:
 
 #if defined( DX_TO_GL_ABSTRACTION )
 	virtual void DoStartupShaderPreloading() = 0;
+	// Per-frame maintenance from the device present path: periodically saves
+	// glshaders.cfg (so a crash/OOM kill loses at most one interval of shader
+	// discovery) and drains the queued program-binary disk writes.
+	virtual void FrameSaveMaintenance( float flCurTime ) = 0;
 #endif
 };
 

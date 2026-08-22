@@ -3363,6 +3363,13 @@ void CShaderDeviceDx8::Present()
 {
 	LOCK_SHADERAPI();
 
+#ifdef DX_TO_GL_ABSTRACTION
+	// Periodically persist glshaders.cfg + drain queued program-binary writes
+	// so an OOM kill (common on low-RAM ARM devices) loses at most one
+	// interval of shader-cache discovery instead of everything since launch.
+	ShaderManager()->FrameSaveMaintenance( Plat_FloatTime() );
+#endif
+
 	// need to flush the dynamic buffer
 	g_pShaderAPI->FlushBufferedPrimitives();
 

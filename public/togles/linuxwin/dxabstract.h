@@ -488,6 +488,9 @@ struct TOGL_CLASS IDirect3DDevice9 : public IUnknown
 
 	// POSIX only - preheating for a specific vertex/pixel shader pair - trigger GLSL link inside GLM
 	HRESULT TOGLMETHODCALLTYPE LinkShaderPair( IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps );
+	// Same, but for a state-variant pair: extraKeyBits are EGLMShaderPairExtraKeyBits.
+	// bPreload (startup cache preload) bypasses variant hysteresis and links immediately.
+	HRESULT TOGLMETHODCALLTYPE LinkShaderPairWithKey( IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps, uint32 nExtraKeyBits, bool bPreload );
 	HRESULT TOGLMETHODCALLTYPE ValidateShaderPair( IDirect3DVertexShader9* vs, IDirect3DPixelShader9* ps );
 	HRESULT TOGLMETHODCALLTYPE QueryShaderPair( int index, GLMShaderPairInfo *infoOut );
 	
@@ -1420,6 +1423,11 @@ TOGL_INTERFACE D3DXPLANE* D3DXPlaneTransform( D3DXPLANE *pOut, CONST D3DXPLANE *
 TOGL_INTERFACE IDirect3D9 *Direct3DCreate9(UINT SDKVersion);
 
 TOGL_INTERFACE void D3DPERF_SetOptions( DWORD dwOptions );
+
+// Drain the queued glshadercache/*.bin program-binary writes (see
+// cglmprogram.cpp).  Call at frame/load boundaries; gameplay never blocks on
+// SD-card writes for shader binaries.
+TOGL_INTERFACE void ToglFlushProgramBinarySaves( void );
 
 TOGL_INTERFACE HRESULT D3DXCompileShader(
 	LPCSTR                          pSrcData,
