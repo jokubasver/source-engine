@@ -162,7 +162,11 @@ private:
 #endif // GL_BATCH_PERF_ANALYSIS
 
 ConVar gl_batch_vis( "gl_batch_vis", "0" );
-ConVar gl_framebuffer_fetch( "gl_framebuffer_fetch", "1", FCVAR_NONE, "Use GL_ARM_shader_framebuffer_fetch to read FB color from tile buffer (Mali TBDR)" );
+// No translated shader currently consumes gl_LastFragColorARM. Enabling the
+// extension in every fragment shader therefore cannot save a resolve, and on
+// old Mali compilers it can inhibit normal depth/fragment optimizations.
+// Keep an opt-in switch for future shaders that explicitly use the built-in.
+ConVar gl_framebuffer_fetch( "gl_framebuffer_fetch", "0", FCVAR_NONE, "Enable GL_ARM_shader_framebuffer_fetch declarations in translated fragment shaders" );
 
 // ------------------------------------------------------------------------------------------------------------------------------ //
 // functions that are dependant on g_pLauncherMgr
@@ -6014,6 +6018,8 @@ HRESULT IDirect3DDevice9::Clear(DWORD Count,CONST D3DRECT* pRects,DWORD Flags,D3
 		
 	g_nTotalDrawsOrClears++;
 	m_ctx->m_nGpuFrameDraws++;
+	if ( m_ctx->m_bGpuTimingFrameActive )
+		++m_ctx->m_nGpuFrameClears;
 
 	m_ctx->FlushDrawStatesNoShaders();
 

@@ -3358,11 +3358,11 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	// 7ls
 //	const char *glslVersionText = m_bUseBindlessTexturing ? "330 compatibility" : "120";
 
-	// Fragment shaders: enable GL_ARM_shader_framebuffer_fetch when available.
-	// This makes gl_LastFragColorARM available (reads current FB color from the
-	// on-chip tile buffer on Mali TBDR — no FBO resolve needed for read-modify-
-	// write passes).  The pragma is harmless if the shader doesn't use the
-	// built-in.  Gated by a ConVar so it can be disabled for debugging.
+	// Only opt in when a translated shader is expected to consume the ARM
+	// framebuffer-fetch built-in. Merely enabling the extension cannot remove a
+	// resolve, and this translator currently emits no gl_LastFragColorARM reads.
+	// Keeping it out of ordinary shaders also avoids selecting a special compiler
+	// path on older Mali drivers.
 	static ConVarRef gl_framebuffer_fetch( "gl_framebuffer_fetch" );
 	bool bFBFetch = gGL && gGL->m_bHave_GL_ARM_shader_framebuffer_fetch
 		&& ( gl_framebuffer_fetch.IsValid() ? gl_framebuffer_fetch.GetBool() : true );
@@ -3375,13 +3375,13 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( ( dwToken & 0xFFFF0000 ) == 0xFFFF0000 )
 	{
 		// must explicitly enable extensions if emitting GLSL
-		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision highp float;\n#define varying in\n\n%s", fbfExtText, glslExtText );
+		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "%sprecision highp float;\n#define varying in\n#ifndef TOGL_ENABLE_ALPHA_TEST\n#define TOGL_ENABLE_ALPHA_TEST 1\n#endif\n#ifndef TOGL_ENABLE_CLIP_PLANES\n#define TOGL_ENABLE_CLIP_PLANES 1\n#endif\n\n%s", fbfExtText, glslExtText );
 		m_bVertexShader = false;
 	}
 	else // vertex shader
 	{
 		m_bGenerateSRGBWriteSuffix = false;
-		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "precision highp float;\n#define attribute in\n#define varying out\n%s//ATTRIBMAP-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx\n", glslExtText );
+		V_snprintf( (char *)m_pBufHeaderCode->Base(), m_pBufHeaderCode->Size(), GLSL_VERSION "precision highp float;\n#define attribute in\n#define varying out\n#ifndef TOGL_ENABLE_ALPHA_TEST\n#define TOGL_ENABLE_ALPHA_TEST 1\n#endif\n#ifndef TOGL_ENABLE_CLIP_PLANES\n#define TOGL_ENABLE_CLIP_PLANES 1\n#endif\n%s//ATTRIBMAP-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx-xx\n", glslExtText );
 
 		// find that first '-xx' which is where the attrib map will be written later.
 		pAttribMapStart = strstr( (char *)m_pBufHeaderCode->Base(), "-xx" ) + 1;
@@ -3747,12 +3747,16 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	if ( m_bVertexShader )
 	{
 		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 vcscreen;\n" );
+		PrintToBuf( *m_pBufHeaderCode, "#if TOGL_ENABLE_CLIP_PLANES\n" );
 		PrintToBuf( *m_pBufHeaderCode, "\nuniform vec4 uClipPlane0;\n" );
 		PrintToBuf( *m_pBufHeaderCode, "uniform vec4 uClipPlane1;\n" );
+		PrintToBuf( *m_pBufHeaderCode, "#endif\n" );
 	}
 
+	PrintToBuf( *m_pBufHeaderCode, "#if TOGL_ENABLE_CLIP_PLANES\n" );
 	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist0;\n" );
 	PrintToBuf( *m_pBufHeaderCode, "varying float vClipDist1;\n" );
+	PrintToBuf( *m_pBufHeaderCode, "#endif\n" );
 				
 	for( int i=0; i<32; i++ )
 	{
@@ -3869,8 +3873,10 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		
 	if ( m_bDeclareVSOPos && m_bVertexShader )
 	{
+		StrcatToALUCode( "#if TOGL_ENABLE_CLIP_PLANES\n" );
 		StrcatToALUCode( "vClipDist0 = dot( vTempPos, uClipPlane0 );\n" );
 		StrcatToALUCode( "vClipDist1 = dot( vTempPos, uClipPlane1 );\n" );
+		StrcatToALUCode( "#endif\n" );
 		
 		if ( m_bDoFixupZ  || m_bDoFixupY )
 		{
@@ -4006,7 +4012,7 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 		StrcatToHeaderCode( "in vec4 _gl_FrontSecondaryColor;\n" );
 
 	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && !m_bVertexShader )
-		StrcatToHeaderCode( "\nuniform float alpha_ref;\n" );	
+		StrcatToHeaderCode( "\n#if TOGL_ENABLE_ALPHA_TEST\nuniform float alpha_ref;\n#endif\n" );
 
 	StrcatToHeaderCode( "\nvoid main()\n{\n" );
 	if ( m_bUsedAtomicTempVar )
@@ -4033,13 +4039,13 @@ int D3DToGL::TranslateShader( uint32* code, CUtlBuffer *pBufDisassembledCode, bo
 	// (a bool* out-parameter, always non-null) which was a no-op; use the real
 	// m_bVertexShader flag so this only applies to fragment shaders.
 	if( !gGL->m_bHave_GL_QCOM_alpha_test && m_iFragDataCount && !m_bVertexShader )
-		StrcatToALUCode( "if( gl_FragData[0].a < alpha_ref ) { discard; };\n" );
+		StrcatToALUCode( "#if TOGL_ENABLE_ALPHA_TEST\nif( gl_FragData[0].a < alpha_ref ) { discard; };\n#endif\n" );
 
 	if( !m_bVertexShader )
 	{
 		// Prepend the clip-plane discard to the front of the ALU code so fragments
 		// are thrown away before doing any texture/color work.
-		const char *szDiscard = "if( vClipDist0 < 0.0 || vClipDist1 < 0.0 ) discard;\n";
+		const char *szDiscard = "#if TOGL_ENABLE_CLIP_PLANES\nif( vClipDist0 < 0.0 || vClipDist1 < 0.0 ) discard;\n#endif\n";
 		char szIndentedDiscard[256];
 		szIndentedDiscard[0] = '\0';
 		{

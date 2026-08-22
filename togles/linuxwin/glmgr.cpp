@@ -63,6 +63,16 @@ ConVar gl_batch_tex_destroys( "gl_batch_tex_destroys", "0" );
 // g_nTotalDrawsOrClears is reset to 0 in Present()
 uint g_nTotalDrawsOrClears, g_nTotalVBLockBytes, g_nTotalIBLockBytes;
 
+// Keep this optional timer-query entry point private to libtogl. Adding it to
+// glfuncs.h would shift COpenGLEntryPoints members read by the launcher and make
+// a libtogl-only deployment ABI-incompatible with an existing executable.
+#if defined( OSX )
+typedef void (*GLMGetQueryObjectui64vEXTPtr_t)( GLuint id, GLenum pname, GLuint64 *params );
+#else
+typedef void (_APIENTRY *GLMGetQueryObjectui64vEXTPtr_t)( GLuint id, GLenum pname, GLuint64 *params );
+#endif
+static GLMGetQueryObjectui64vEXTPtr_t s_pglGetQueryObjectui64vEXT = NULL;
+
 #if GL_TELEMETRY_GPU_ZONES
 TelemetryGPUStats_t g_TelemetryGPUStats;
 #endif
@@ -913,7 +923,7 @@ void GLMContext::RestoreSavedColorMask()
 	m_ColorMaskSingle.WriteAndFlush( &m_SavedColorMask );
 }
 
-void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter )
+void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter, bool restoreDrawingFBO )
 {
 #if GL_TELEMETRY_GPU_ZONES
 	CScopedGLMPIXEvent glmPIXEvent( "Blit2" );
@@ -1031,6 +1041,29 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 				}
 			}
 		}	
+	}
+
+	// One logical Blit2 can issue both a resolve-to-scratch and a final copy.
+	// Keep these diagnostic counters separate so TBDR render-pass breaks are
+	// visible instead of being hidden behind the single logical-blit count.
+	m_nGpuFramePhysicalBlits += blitTwoStep ? 2 : 1;
+	if ( blitTwoStep )
+		m_nGpuFrameTwoStepBlits++;
+	if ( blitResolves )
+		m_nGpuFrameResolvingBlits++;
+	if ( blitScales )
+		m_nGpuFrameScalingBlits++;
+	if ( blitToBack )
+		m_nGpuFrameBackbufferBlits++;
+	const uint64 nDstWidth = (uint64)( dstRect->xmax >= dstRect->xmin ?
+		dstRect->xmax - dstRect->xmin : dstRect->xmin - dstRect->xmax );
+	const uint64 nDstHeight = (uint64)( dstRect->ymax >= dstRect->ymin ?
+		dstRect->ymax - dstRect->ymin : dstRect->ymin - dstRect->ymax );
+	m_nGpuFrameBlitPixels += nDstWidth * nDstHeight;
+	if ( blitTwoStep )
+	{
+		m_nGpuFrameBlitPixels += (uint64)srcTex->m_layout->m_key.m_xSize *
+			(uint64)srcTex->m_layout->m_key.m_ySize;
 	}
 
 	//----------------------------------------------------------------- save old scissor state and disable scissor
@@ -1216,8 +1249,12 @@ void GLMContext::Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcM
 		
 	//----------------------------------------------------------------- restore GLM's drawing FBO
 
-	//	restore GLM drawing FBO
-	BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER );
+	// Ordinary texture blits resume rendering into the scene FBO.  Presentation
+	// deliberately leaves FBO 0 bound through the swap; rebinding the completed
+	// scene here only to unbind it again can trigger a tile reload/store on TBDR
+	// GPUs and always costs two redundant driver calls.
+	if ( restoreDrawingFBO )
+		BindFBOToCtx( m_drawingFBO, GL_FRAMEBUFFER );
 	
 	//----------------------------------------------------------------- restore old scissor state
 	if (oldsciss.enable)
@@ -1610,6 +1647,9 @@ void GLMContext::ResolveTex( CGLMTex *tex, bool forceDirty )
 		//-----------------------------------------------------------------------------------
 
 		// blit
+		m_nGpuFramePhysicalBlits++;
+		m_nGpuFrameBlitPixels += (uint64)tex->m_layout->m_key.m_xSize *
+			(uint64)tex->m_layout->m_key.m_ySize;
 		gGL->glBlitFramebuffer(	0, 0,	tex->m_layout->m_key.m_xSize, tex->m_layout->m_key.m_ySize,
 								0, 0,	tex->m_layout->m_key.m_xSize, tex->m_layout->m_key.m_ySize,
 								blitMask, GL_NEAREST );
@@ -2175,6 +2215,10 @@ static	ConVar gl_texlayoutstats ("gl_texlayoutstats", "0" );
 // Prints the command-stream thread's CPU time for the frame vs the GPU's
 // GL_TIME_ELAPSED time (previous frame's GPU time, read without stalling).
 static	ConVar gl_gpu_timing ("gl_gpu_timing", "0");
+// Positive value captures one frame of indexed draws having at least this many
+// indices, then resets itself to zero. This is diagnostic only and never
+// changes GL state or waits for the GPU.
+static	ConVar gl_draw_trace ("gl_draw_trace", "0");
 
 static uint gPersistentBufferSize[kGLMNumBufferTypes] = 
 {
@@ -2192,17 +2236,79 @@ void GLMContext::BeginFrame( void )
 	GLM_FUNC;
 	VPROF_BUDGET( "ToGL_BeginFrame", "ToGL_BeginFrame" );
 
-	// Start the GPU frame timer. It spans all GL work submitted between
-	// BeginFrame and Present, so it measures the whole frame on the GPU.
-	if ( gl_gpu_timing.GetInt() && m_bGpuTimerAvailable )
+	m_nGpuDrawTraceMinIndices = MAX( gl_draw_trace.GetInt(), 0 );
+	if ( m_nGpuDrawTraceMinIndices > 0 )
 	{
-		if ( m_gpuTimerQuery[0] == 0 )
-		{
-			gGL->glGenQueries( 2, m_gpuTimerQuery );
-		}
+		m_nGpuDrawTraceDrawIndex = 0;
+		Msg( "GL draw trace: capturing one frame, minimum %d indices\n", m_nGpuDrawTraceMinIndices );
+		gl_draw_trace.SetValue( 0 );
+	}
+
+	const bool bTimingRequested = ( gl_gpu_timing.GetInt() != 0 );
+	const bool bTimingStarting = bTimingRequested && !m_bGpuTimingFrameActive;
+	m_bGpuTimingFrameActive = bTimingRequested;
+
+	if ( bTimingRequested )
+	{
 		m_flGpuFrameStart = Plat_FloatTime();
-		gGL->glBeginQuery( GL_TIME_ELAPSED_EXT, m_gpuTimerQuery[m_nGpuTimerIndex] );
-		m_bGpuTimerArmed = true;
+		m_bGpuTimerResultValid = false;
+
+		// Counters run in hot paths even while reporting is disabled. Discard
+		// that history when diagnostics are enabled so the first line describes
+		// the first measured frame rather than everything since context creation.
+		if ( bTimingStarting )
+		{
+			m_flGpuReportStart = m_flGpuFrameStart;
+			m_nGpuReportFrames = 0;
+			m_nGpuReportSamples = 0;
+			m_flGpuAccumMs = 0.0f;
+			m_flCpuAccumMs = 0.0f;
+			m_flCpuPreSwapAccumMs = 0.0f;
+			m_flSwapWindowAccumMs = 0.0f;
+			m_nGpuFrameDraws = 0;
+			m_nGpuFramePhysicalDraws = 0;
+			m_nGpuFrameClears = 0;
+			m_nGpuFrameIndices = 0;
+			m_nGpuFrameTriangles = 0;
+			m_nGpuFrameVertexSpan = 0;
+			m_nGpuFrameAlphaTestDraws = 0;
+			m_nGpuFrameAlphaTestTriangles = 0;
+			m_nGpuFrameNoCullDraws = 0;
+			m_nGpuFrameNoCullTriangles = 0;
+			m_nGpuFrameBlendDraws = 0;
+			m_nGpuFrameBlendTriangles = 0;
+			m_nGpuFrameEarlyZCandidateTriangles = 0;
+			m_nGpuFrameProgramChanges = 0;
+			m_nGpuFrameUniformCalls = 0;
+			m_nGpuFrameUniformsSet = 0;
+			m_nGpuFrameResolves = 0;
+			m_nGpuFrameBlits = 0;
+			m_nGpuFramePhysicalBlits = 0;
+			m_nGpuFrameTwoStepBlits = 0;
+			m_nGpuFrameResolvingBlits = 0;
+			m_nGpuFrameScalingBlits = 0;
+			m_nGpuFrameBackbufferBlits = 0;
+			m_nGpuFrameBlitPixels = 0;
+			m_nGpuTimerIndex = 0;
+			m_bGpuTimerHasRecorded = false;
+		}
+
+		// Timer queries are disabled on known-unstable drivers, but the CPU,
+		// swap and command-stream counters above remain useful and still report.
+		if ( m_bGpuTimerAvailable )
+		{
+			if ( m_gpuTimerQuery[0] == 0 )
+			{
+				gGL->glGenQueries( 2, m_gpuTimerQuery );
+
+				// Reading this flag clears any disjoint state left over from before
+				// timing was enabled, so the first recorded interval has a clean base.
+				GLint bIgnoredDisjoint = GL_FALSE;
+				gGL->glGetIntegerv( GL_GPU_DISJOINT_EXT, &bIgnoredDisjoint );
+			}
+			gGL->glBeginQuery( GL_TIME_ELAPSED_EXT, m_gpuTimerQuery[m_nGpuTimerIndex] );
+			m_bGpuTimerArmed = true;
+		}
 	}
 
 	m_debugFrameIndex++;
@@ -2416,6 +2522,7 @@ void GLMContext::Present( CGLMTex *tex )
 {
 	GLM_FUNC;
 	VPROF_BUDGET( "ToGL_Present", "ToGL_Present" );
+	bool bGpuTimerEndedThisFrame = false;
 	
 	{
 #if GL_TELEMETRY_GPU_ZONES
@@ -2521,7 +2628,7 @@ void GLMContext::Present( CGLMTex *tex )
 					VPROF_BUDGET( "ToGL_Present_Blit", "ToGL_Present_Blit" );
 					Blit2(	tex, &srcRect, 0,0,
 									NULL, &dstRect, 0,0,
-									blitScales ? GL_LINEAR : GL_NEAREST );
+									blitScales ? GL_LINEAR : GL_NEAREST, false );
 				}
 
 				// we set showparams.m_noBlit, and just let CocoaMgr handle the swap (flushbuffer / page flip)
@@ -2541,8 +2648,28 @@ void GLMContext::Present( CGLMTex *tex )
 		{
 			VPROF_BUDGET( "ToGL_Present_Swap", "ToGL_Present_Swap" );
 			m_flGpuFrameEndPreSwap = Plat_FloatTime();
+			if ( m_bGpuTimerArmed )
+			{
+				// Measure submitted rendering only. SDL_GL_SwapWindow can wait on
+				// page flips or buffer availability, which is reported separately.
+				m_bGpuTimerArmed = false;
+				m_bGpuTimerResultValid = false;
+				gGL->glEndQuery( GL_TIME_ELAPSED_EXT );
+				bGpuTimerEndedThisFrame = true;
+			}
 			ShowPixels(&showparams);
 		}
+		}
+
+		// The OSX diagnostic null-refresh path skips ShowPixels, but an open
+		// query must still be closed before restoring the scene framebuffer.
+		if ( m_bGpuTimerArmed )
+		{
+			m_flGpuFrameEndPreSwap = Plat_FloatTime();
+			m_bGpuTimerArmed = false;
+			m_bGpuTimerResultValid = false;
+			gGL->glEndQuery( GL_TIME_ELAPSED_EXT );
+			bGpuTimerEndedThisFrame = true;
 		}
 
 		//	put the original FB back in place (both read and draw)
@@ -2557,13 +2684,10 @@ void GLMContext::Present( CGLMTex *tex )
 
 	m_nCurFrame++;
 
-	// End the GPU frame timer, then read the previous frame's result so the
-	// read never blocks the pipeline. Report CPU vs GPU time per gl_gpu_timing.
-	if ( m_bGpuTimerArmed )
+	// Read the previous frame's result so the read never blocks the pipeline.
+	// Report CPU, render-GPU, and swap-window time per gl_gpu_timing.
+	if ( bGpuTimerEndedThisFrame )
 	{
-		m_bGpuTimerArmed = false;
-		gGL->glEndQuery( GL_TIME_ELAPSED_EXT );
-
 		if ( m_bGpuTimerHasRecorded )
 		{
 			const int nReadIndex = m_nGpuTimerIndex ^ 1;
@@ -2571,9 +2695,25 @@ void GLMContext::Present( CGLMTex *tex )
 			gGL->glGetQueryObjectuiv( m_gpuTimerQuery[nReadIndex], GL_QUERY_RESULT_AVAILABLE, &nAvailable );
 			if ( nAvailable )
 			{
-				GLuint nResult = 0;
-				gGL->glGetQueryObjectuiv( m_gpuTimerQuery[nReadIndex], GL_QUERY_RESULT, &nResult );
-				m_nGpuTimeNanos = nResult;
+				// Timer-query results are invalid across a GPU clock discontinuity.
+				// Mali can report these during DVFS transitions, so never fold a
+				// disjoint sample (often 0xFFFFFFFF) into the frame average.
+				GLint bDisjoint = GL_FALSE;
+				gGL->glGetIntegerv( GL_GPU_DISJOINT_EXT, &bDisjoint );
+				if ( !bDisjoint )
+				{
+					GLuint64 nResult = 0;
+					s_pglGetQueryObjectui64vEXT( m_gpuTimerQuery[nReadIndex], GL_QUERY_RESULT, &nResult );
+					m_nGpuTimeNanos = nResult;
+					m_bGpuTimerResultValid = true;
+				}
+				else
+				{
+					// The disjoint flag applies to every timer result since it was
+					// last read, including the query just ended above. Drain both
+					// ping-pong slots before accepting another sample.
+					m_bGpuTimerHasRecorded = false;
+				}
 			}
 		}
 		else
@@ -2582,9 +2722,13 @@ void GLMContext::Present( CGLMTex *tex )
 		}
 
 		m_nGpuTimerIndex ^= 1;
-
-		UpdateGpuTimingReport();
 	}
+
+	// ARM/Mali deliberately takes this reporting path without inserting timer
+	// queries into the GL command stream; GPU prints n/a while all CPU, swap,
+	// draw/state and blit counters remain available.
+	if ( m_bGpuTimingFrameActive )
+		UpdateGpuTimingReport();
 
 #if GL_BATCH_PERF_ANALYSIS
 	tmMessage( TELEMETRY_LEVEL2, TMMF_ICON_EXCLAMATION, "VS Uniform Calls: %u, VS Uniforms: %u|VS Uniform Bone Calls: %u, VS Bone Uniforms: %u|PS Uniform Calls: %u, PS Uniforms: %u", m_nTotalVSUniformCalls, m_nTotalVSUniformsSet, m_nTotalVSUniformBoneCalls, m_nTotalVSUniformsBoneSet, m_nTotalPSUniformCalls, m_nTotalPSUniformsSet );
@@ -2600,39 +2744,188 @@ void GLMContext::UpdateGpuTimingReport()
 	const float flNow = Plat_FloatTime();
 	const float flCpuMs = ( flNow - m_flGpuFrameStart ) * 1000.0f;
 	const float flCpuPreSwapMs = ( m_flGpuFrameEndPreSwap - m_flGpuFrameStart ) * 1000.0f;
-	const float flGpuMs = (float)( m_nGpuTimeNanos / 1000000.0 );
+	const float flGpuMs = m_bGpuTimerResultValid ? (float)( m_nGpuTimeNanos / 1000000.0 ) : 0.0f;
+	const float flSwapWindowMs = g_pLauncherMgr ? (float)g_pLauncherMgr->GetPrevGLSwapWindowTime() : 0.0f;
 
 	m_flGpuLastCpuMs = flCpuMs;
-	m_flGpuAccumMs += flGpuMs;
+	if ( m_bGpuTimerResultValid )
+	{
+		m_flGpuAccumMs += flGpuMs;
+		m_nGpuReportSamples++;
+	}
 	m_flCpuAccumMs += flCpuMs;
 	m_flCpuPreSwapAccumMs += flCpuPreSwapMs;
+	m_flSwapWindowAccumMs += flSwapWindowMs;
 	m_nGpuReportFrames++;
 
 	const bool bEveryFrame = ( gl_gpu_timing.GetInt() >= 2 );
 	if ( bEveryFrame || ( flNow - m_flGpuReportStart ) >= 1.0f )
 	{
 		const int nFrames = MAX( m_nGpuReportFrames, 1 );
-		Msg( "GPU timing: %d frames | CPU %4.2f ms | CPU(preswap) %4.2f ms | swap %4.2f ms | GPU %4.2f ms | draws %d | prog %d | uni %d (%d v4) | resolve %d | blit %d | last: CPU %4.2f ms, GPU %4.2f ms\n",
+		char szGpuAverage[32];
+		char szGpuLast[32];
+		if ( m_nGpuReportSamples > 0 )
+			V_snprintf( szGpuAverage, sizeof(szGpuAverage), "%.2f", m_flGpuAccumMs / m_nGpuReportSamples );
+		else
+			V_strncpy( szGpuAverage, "n/a", sizeof(szGpuAverage) );
+		if ( m_bGpuTimerResultValid )
+			V_snprintf( szGpuLast, sizeof(szGpuLast), "%.2f", flGpuMs );
+		else
+			V_strncpy( szGpuLast, "n/a", sizeof(szGpuLast) );
+
+		Msg( "GPU timing: %d frames | CPU %4.2f ms | CPU(preswap) %4.2f ms | swap %4.2f ms | SDLswap %4.2f ms | GPU %s ms | sub %.1f/f (GL %.1f/f, clear %.1f/f, idx %.3fM/f, tri %.3fM/f, span %.3fM/f; alpha %.1f/%.3fM, nocull %.1f/%.3fM, blend %.1f/%.3fM, earlyZcandidate %.3fM) | prog %.1f/f | uni %.1f/f (%.1f v4/f) | resolve %.1f/f | blit %.1f/f (GL %.1f/f, 2step %.1f/f, msaa %.1f/f, scale %.1f/f, back %.1f/f, px %.2fM/f) | last: CPU %4.2f ms, GPU %s ms\n",
 			m_nGpuReportFrames,
 			m_flCpuAccumMs / nFrames,
 			m_flCpuPreSwapAccumMs / nFrames,
 			( m_flCpuAccumMs - m_flCpuPreSwapAccumMs ) / nFrames,
-			m_flGpuAccumMs / nFrames,
-			m_nGpuFrameDraws, m_nGpuFrameProgramChanges,
-			m_nGpuFrameUniformCalls, m_nGpuFrameUniformsSet,
-			m_nGpuFrameResolves, m_nGpuFrameBlits,
-			flCpuMs, flGpuMs );
+			m_flSwapWindowAccumMs / nFrames,
+			szGpuAverage,
+			(double)m_nGpuFrameDraws / nFrames,
+			(double)m_nGpuFramePhysicalDraws / nFrames,
+			(double)m_nGpuFrameClears / nFrames,
+			(double)m_nGpuFrameIndices / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameTriangles / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameVertexSpan / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameAlphaTestDraws / nFrames,
+			(double)m_nGpuFrameAlphaTestTriangles / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameNoCullDraws / nFrames,
+			(double)m_nGpuFrameNoCullTriangles / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameBlendDraws / nFrames,
+			(double)m_nGpuFrameBlendTriangles / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameEarlyZCandidateTriangles / ( (double)nFrames * 1000000.0 ),
+			(double)m_nGpuFrameProgramChanges / nFrames,
+			(double)m_nGpuFrameUniformCalls / nFrames,
+			(double)m_nGpuFrameUniformsSet / nFrames,
+			(double)m_nGpuFrameResolves / nFrames,
+			(double)m_nGpuFrameBlits / nFrames,
+			(double)m_nGpuFramePhysicalBlits / nFrames,
+			(double)m_nGpuFrameTwoStepBlits / nFrames,
+			(double)m_nGpuFrameResolvingBlits / nFrames,
+			(double)m_nGpuFrameScalingBlits / nFrames,
+			(double)m_nGpuFrameBackbufferBlits / nFrames,
+			(double)m_nGpuFrameBlitPixels / ( (double)nFrames * 1000000.0 ),
+			flCpuMs, szGpuLast );
 		m_nGpuReportFrames = 0;
+		m_nGpuReportSamples = 0;
 		m_flGpuAccumMs = 0.0f;
 		m_flCpuAccumMs = 0.0f;
 		m_flCpuPreSwapAccumMs = 0.0f;
+		m_flSwapWindowAccumMs = 0.0f;
 		m_flGpuReportStart = flNow;
 		m_nGpuFrameDraws = 0;
+		m_nGpuFramePhysicalDraws = 0;
+		m_nGpuFrameClears = 0;
+		m_nGpuFrameIndices = 0;
+		m_nGpuFrameTriangles = 0;
+		m_nGpuFrameVertexSpan = 0;
+		m_nGpuFrameAlphaTestDraws = 0;
+		m_nGpuFrameAlphaTestTriangles = 0;
+		m_nGpuFrameNoCullDraws = 0;
+		m_nGpuFrameNoCullTriangles = 0;
+		m_nGpuFrameBlendDraws = 0;
+		m_nGpuFrameBlendTriangles = 0;
+		m_nGpuFrameEarlyZCandidateTriangles = 0;
 		m_nGpuFrameProgramChanges = 0;
 		m_nGpuFrameUniformCalls = 0;
 		m_nGpuFrameUniformsSet = 0;
 		m_nGpuFrameResolves = 0;
 		m_nGpuFrameBlits = 0;
+		m_nGpuFramePhysicalBlits = 0;
+		m_nGpuFrameTwoStepBlits = 0;
+		m_nGpuFrameResolvingBlits = 0;
+		m_nGpuFrameScalingBlits = 0;
+		m_nGpuFrameBackbufferBlits = 0;
+		m_nGpuFrameBlitPixels = 0;
+	}
+}
+
+void GLMContext::TraceDraw( GLenum mode, GLuint start, GLuint end, GLsizei count )
+{
+	if ( !m_pBoundPair || !m_pBoundPair->m_vertexProg || !m_pBoundPair->m_fragmentProg )
+		return;
+
+	const CGLMProgram *pVS = m_pBoundPair->m_vertexProg;
+	const CGLMProgram *pPS = m_pBoundPair->m_fragmentProg;
+	const GLMShaderDesc &vsDesc = pVS->m_descs[kGLMGLSL];
+	const GLMShaderDesc &psDesc = pPS->m_descs[kGLMGLSL];
+	const uint64 nTriangles = ( mode == GL_TRIANGLES && count >= 3 ) ? (uint64)count / 3 :
+		( ( mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN ) && count >= 3 ? (uint64)count - 2 : 0 );
+	const uint64 nVertexSpan = ( count > 0 && end >= start ) ? (uint64)end - (uint64)start + 1 : 0;
+
+	CGLMTex *pRenderTarget = NULL;
+	if ( m_drawingFBO )
+		pRenderTarget = m_drawingFBO->m_attach[kAttColor0].m_tex;
+	const char *pRTLabel = pRenderTarget && pRenderTarget->m_debugLabel ? pRenderTarget->m_debugLabel : "<unnamed>";
+	const int nRTWidth = pRenderTarget ? pRenderTarget->m_layout->m_key.m_xSize : 0;
+	const int nRTHeight = pRenderTarget ? pRenderTarget->m_layout->m_key.m_ySize : 0;
+	const int nRTFormat = pRenderTarget ? (int)pRenderTarget->m_layout->m_key.m_texFormat : -1;
+	const int nRTSamples = pRenderTarget ? (int)pRenderTarget->m_layout->m_key.m_texSamples : 0;
+
+	const GLViewportBox_t &viewport = m_ViewportBox.GetData();
+	const GLScissorEnable_t &scissorEnable = m_ScissorEnable.GetData();
+	const GLScissorBox_t &scissor = m_ScissorBox.GetData();
+	const GLColorMaskSingle_t &colorMask = m_ColorMaskSingle.GetData();
+	int nDiscardTokens = 0;
+	if ( pPS->m_text )
+	{
+		const char *pDiscard = pPS->m_text;
+		while ( ( pDiscard = V_strstr( pDiscard, "discard" ) ) != NULL )
+		{
+			++nDiscardTokens;
+			pDiscard += 7;
+		}
+	}
+	const bool bWritesFragDepth = pPS->m_text && V_strstr( pPS->m_text, "gl_FragDepth" );
+	const bool bFramebufferFetch = pPS->m_text && V_strstr( pPS->m_text, "GL_ARM_shader_framebuffer_fetch" );
+
+	Msg( "GL draw trace #%d: idx %d tri %llu span %llu mode 0x%04X | pair %u key 0x%X | VS %s [%s idx %d combo %d hw %d bone %d] | PS %s [%s idx %d combo %d hw %d samp %u mask 0x%08X] | attrib %d streams 0x%X\n",
+		++m_nGpuDrawTraceDrawIndex, (int)count, (unsigned long long)nTriangles,
+		(unsigned long long)nVertexSpan, (unsigned int)mode, (unsigned int)m_pBoundPair->m_program,
+		m_pBoundPair->m_extraKeyBits,
+		pVS->m_shaderName, pVS->m_labelName, pVS->m_labelIndex, pVS->m_labelCombo,
+		vsDesc.m_highWater, vsDesc.m_VSHighWaterBone,
+		pPS->m_shaderName, pPS->m_labelName, pPS->m_labelIndex, pPS->m_labelCombo,
+		psDesc.m_highWater, pPS->m_nNumUsedSamplers, pPS->m_samplerMask,
+		m_nNumSetVertexAttributes, m_CurAttribs.m_nUsedStreamsMask );
+
+	Msg( "  RT %s %dx%d fmt %d samples %d fbo %u | vp %d,%d %dx%d | scissor %d %d,%d %dx%d | state alpha %d blend %d cull %d depth %d/%d func 0x%04X color %d%d%d%d | source discard %d fragdepth %d fbfetch %d\n",
+		pRTLabel, nRTWidth, nRTHeight, nRTFormat, nRTSamples,
+		m_drawingFBO ? (unsigned int)m_drawingFBO->m_name : 0,
+		viewport.x, viewport.y, (int)viewport.width, (int)viewport.height,
+		scissorEnable.enable != 0, scissor.x, scissor.y, (int)scissor.width, (int)scissor.height,
+		m_AlphaTestEnable.GetData().enable != 0, m_BlendEnable.GetData().enable != 0,
+		m_CullFaceEnable.GetData().enable != 0, m_DepthTestEnable.GetData().enable != 0,
+		m_DepthMask.GetData().mask != 0, (unsigned int)m_DepthFunc.GetData().func,
+		colorMask.r != 0, colorMask.g != 0, colorMask.b != 0, colorMask.a != 0,
+		nDiscardTokens, bWritesFragDepth, bFramebufferFetch );
+
+	for ( uint nSampler = 0; nSampler < GLM_SAMPLER_COUNT; ++nSampler )
+	{
+		if ( !( pPS->m_samplerMask & ( 1u << nSampler ) ) )
+			continue;
+
+		CGLMTex *pTex = m_samplers[nSampler].m_pBoundTex;
+		if ( pTex )
+		{
+			const GLMTexSamplingParams &sampling = m_samplers[nSampler].m_samp;
+			Msg( "  s%u tex %u %s %dx%d fmt %d flags 0x%lX mip %d..%d | filter %u/%u/%u lod %u..%u aniso %u srgb %u\n",
+				nSampler, (unsigned int)pTex->m_texName,
+				pTex->m_debugLabel ? pTex->m_debugLabel : "<unnamed>",
+				pTex->m_layout->m_key.m_xSize, pTex->m_layout->m_key.m_ySize,
+				(int)pTex->m_layout->m_key.m_texFormat,
+				pTex->m_layout->m_key.m_texFlags, pTex->m_minActiveMip, pTex->m_maxActiveMip,
+				(unsigned int)sampling.m_packed.m_minFilter,
+				(unsigned int)sampling.m_packed.m_magFilter,
+				(unsigned int)sampling.m_packed.m_mipFilter,
+				(unsigned int)sampling.m_packed.m_minLOD,
+				(unsigned int)sampling.m_packed.m_maxLOD,
+				(unsigned int)sampling.m_packed.m_maxAniso,
+				(unsigned int)sampling.m_packed.m_srgb );
+		}
+		else
+		{
+			Msg( "  s%u <null>\n", nSampler );
+		}
 	}
 }
 
@@ -2714,24 +3007,60 @@ GLMContext::GLMContext( IDirect3DDevice9 *pDevice, GLMDisplayParams *params )
 
 	m_gpuTimerQuery[0] = m_gpuTimerQuery[1] = 0;
 	m_nGpuTimerIndex = 0;
-	m_bGpuTimerAvailable = gGL->m_bHave_GL_EXT_disjoint_timer_query;
+	// Mali r13 advertises disjoint timer queries, but the elapsed-query command
+	// path corrupts the tiler/display cadence (alternating black frames) and
+	// never makes a result available. Keep those queries completely
+	// out of the ARM command stream; CPU/SDL/blit diagnostics still work.
+	const bool bAllowGpuTimerQueries = ( gGL->m_nDriverProvider != cGLDriverProviderARM );
+	if ( bAllowGpuTimerQueries && gGL->m_bHave_GL_EXT_disjoint_timer_query && !s_pglGetQueryObjectui64vEXT )
+	{
+		bool bLookupOK = true;
+		s_pglGetQueryObjectui64vEXT = (GLMGetQueryObjectui64vEXTPtr_t)VoidFnPtrLookup_GlMgr(
+			"glGetQueryObjectui64vEXT", bLookupOK, false, NULL );
+	}
+	m_bGpuTimerAvailable = bAllowGpuTimerQueries && gGL->m_bHave_GL_EXT_disjoint_timer_query &&
+		( s_pglGetQueryObjectui64vEXT != NULL );
+	m_bGpuTimingFrameActive = false;
 	m_bGpuTimerArmed = false;
 	m_bGpuTimerHasRecorded = false;
+	m_bGpuTimerResultValid = false;
 	m_nGpuTimeNanos = 0;
 	m_flGpuFrameStart = 0.0f;
 	m_flGpuLastCpuMs = 0.0f;
 	m_flGpuReportStart = 0.0f;
 	m_nGpuReportFrames = 0;
+	m_nGpuReportSamples = 0;
 	m_flGpuAccumMs = 0.0f;
 	m_flCpuAccumMs = 0.0f;
 	m_flCpuPreSwapAccumMs = 0.0f;
+	m_flSwapWindowAccumMs = 0.0f;
 	m_flGpuFrameEndPreSwap = 0.0f;
 	m_nGpuFrameDraws = 0;
+	m_nGpuFramePhysicalDraws = 0;
+	m_nGpuFrameClears = 0;
+	m_nGpuFrameIndices = 0;
+	m_nGpuFrameTriangles = 0;
+	m_nGpuFrameVertexSpan = 0;
+	m_nGpuFrameAlphaTestDraws = 0;
+	m_nGpuFrameAlphaTestTriangles = 0;
+	m_nGpuFrameNoCullDraws = 0;
+	m_nGpuFrameNoCullTriangles = 0;
+	m_nGpuFrameBlendDraws = 0;
+	m_nGpuFrameBlendTriangles = 0;
+	m_nGpuFrameEarlyZCandidateTriangles = 0;
+	m_nGpuDrawTraceMinIndices = 0;
+	m_nGpuDrawTraceDrawIndex = 0;
 	m_nGpuFrameProgramChanges = 0;
 	m_nGpuFrameUniformCalls = 0;
 	m_nGpuFrameUniformsSet = 0;
 	m_nGpuFrameResolves = 0;
 	m_nGpuFrameBlits = 0;
+	m_nGpuFramePhysicalBlits = 0;
+	m_nGpuFrameTwoStepBlits = 0;
+	m_nGpuFrameResolvingBlits = 0;
+	m_nGpuFrameScalingBlits = 0;
+	m_nGpuFrameBackbufferBlits = 0;
+	m_nGpuFrameBlitPixels = 0;
 
 	ClearCurAttribs();
 
@@ -5617,6 +5946,7 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 
 	if ( m_pBoundPair )
 	{
+		RecordDrawStats( mode, start, end, count );
 		if ( m_bUseDrawElementsBaseVertex )
 			gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
 		else

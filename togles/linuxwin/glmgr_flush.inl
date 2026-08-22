@@ -150,12 +150,15 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	// a flush is still pending - the GPU would read stale bytes.  Check the
 	// four bound streams directly: four loads per draw, zero GL work when
 	// nothing is pending.
-	for ( uint nStream = 0; nStream < 4; ++nStream )
+	if ( gGL->m_bHave_GL_EXT_buffer_storage )
 	{
-		CGLMBuffer *pBuf = m_pDevice->m_vtx_buffers[ nStream ];
-		if ( pBuf->m_bPendingPersistentFlush )
+		for ( uint nStream = 0; nStream < 4; ++nStream )
 		{
-			pBuf->FlushPendingPersistentRange();
+			CGLMBuffer *pBuf = m_pDevice->m_vtx_buffers[ nStream ];
+			if ( pBuf->m_bPendingPersistentFlush )
+			{
+				pBuf->FlushPendingPersistentRange();
+			}
 		}
 	}
 
@@ -293,7 +296,16 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 	{
 		m_bDirtyPrograms = false;
 
-		CGLMShaderPair *pNewPair = m_pairCache->SelectShaderPair( m_drawingProgram[ kGLMVertexProgram ], m_drawingProgram[ kGLMFragmentProgram ], 0 );
+		uint nShaderPairExtraKeyBits = 0;
+		if ( !gGL->m_bHave_GL_QCOM_alpha_test && m_AlphaTestEnable.GetData().enable )
+			nShaderPairExtraKeyBits |= kGLMShaderPairAlphaTestEnabled;
+		if ( m_ClipPlaneEnable.GetDataIndex(0).enable || m_ClipPlaneEnable.GetDataIndex(1).enable )
+			nShaderPairExtraKeyBits |= kGLMShaderPairClipPlanesEnabled;
+
+		CGLMShaderPair *pNewPair = m_pairCache->SelectShaderPair(
+			m_drawingProgram[kGLMVertexProgram],
+			m_drawingProgram[kGLMFragmentProgram],
+			nShaderPairExtraKeyBits );
 
 		if ( pNewPair != m_pBoundPair )
 		{
@@ -886,7 +898,6 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 		tmZone( TELEMETRY_LEVEL2, TMZF_NONE, "SetVertexAttribs" );
 #endif
 
-		m_CurAttribs.m_nTotalBufferRevision = nCurTotalBufferRevision;
 		m_CurAttribs.m_nVertexInputRevision = m_pDevice->m_nVertexInputRevision;
 
 		unsigned char *pVertexShaderAttribMap = m_pDevice->m_vertexShader->m_vtxAttribMap;
@@ -961,12 +972,22 @@ FORCEINLINE void GLMContext::FlushDrawStates( uint nStartIndex, uint nEndIndex, 
 
 		for( int nIndex = nMaxVertexAttributesToCheck; nIndex < m_nNumSetVertexAttributes; nIndex++ )
 		{
-			gGL->glDisableVertexAttribArray( nIndex );
-			m_lastKnownVertexAttribMask &= ~(1 << nIndex);
+			const uint nMask = ( 1U << nIndex );
+			if ( m_lastKnownVertexAttribMask & nMask )
+			{
+				gGL->glDisableVertexAttribArray( nIndex );
+				m_lastKnownVertexAttribMask &= ~nMask;
+			}
 		}
 
 		m_nNumSetVertexAttributes = nMaxVertexAttributesToCheck;
 		m_CurAttribs.m_nUsedStreamsMask = nUsedStreamsMask;
+		m_CurAttribs.m_nTotalBufferRevision = 0;
+		for ( uint nStream = 0; nStream < 4; ++nStream )
+		{
+			if ( nUsedStreamsMask & ( 1U << nStream ) )
+				m_CurAttribs.m_nTotalBufferRevision += m_pDevice->m_vtx_buffers[nStream]->m_nRevision;
+		}
 	}
 
 	// fragment stage --------------------------------------------------------------------

@@ -96,6 +96,17 @@ enum EGLMProgramLang
 	kGLMNumProgramLangs
 };
 
+// Runtime render states that must alter the generated GLSL itself.  Keeping
+// these in the shader-pair key lets the common opaque path omit discard
+// instructions entirely instead of merely disabling them with uniforms.
+enum EGLMShaderPairExtraKeyBits
+{
+	kGLMShaderPairAlphaTestEnabled = ( 1u << 0 ),
+	kGLMShaderPairClipPlanesEnabled = ( 1u << 1 ),
+	kGLMShaderPairExtraKeyMask =
+		kGLMShaderPairAlphaTestEnabled | kGLMShaderPairClipPlanesEnabled
+};
+
 struct GLMShaderDesc
 {
 	union
@@ -146,6 +157,8 @@ public:
 	void	CompileActiveSources	( void );					// compile only the flavors that were provided.
 	void	Compile					( EGLMProgramLang lang );	
 	bool	CheckValidity			( EGLMProgramLang lang );
+	GLuint	GetGLSLShaderVariant	( uint extraKeyBits );
+	void	DeleteGLSLShaderVariants( void );
 
 	void	LogSlow					( EGLMProgramLang lang );	// detailed spew when called for first time; one liner or perhaps silence after that
 	
@@ -175,6 +188,8 @@ public:
 #endif	
 	
 	GLMShaderDesc			m_descs[ kGLMNumProgramLangs ];	
+	GLuint					m_glslShaderVariants[4];
+	uint					m_failedGLSLShaderVariantMask;
 
 	uint					m_samplerMask;			// (1<<n) mask of sampler active locs, if this is a fragment shader (dxabstract sets this field)
 	uint					m_samplerTypes;			// SAMPLER_2D, etc.
@@ -229,7 +244,7 @@ public:
 	CGLMShaderPair( GLMContext *ctx  );
 	~CGLMShaderPair( );	
 
-	bool	SetProgramPair			( CGLMProgram *vp, CGLMProgram *fp );
+	bool	SetProgramPair			( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits );
 		// true result means successful link and query
 		// Note that checking the link status and querying the uniform can be optionally
 		// deferred to take advantage of multi-threaded compilation in the driver
@@ -263,6 +278,9 @@ public:
 
 	CGLMProgram				*m_vertexProg;	
 	CGLMProgram				*m_fragmentProg;
+	uint					m_extraKeyBits;
+	GLuint					m_vertexShaderObject;
+	GLuint					m_fragmentShaderObject;
 
 	GLuint				m_program;				// linked program object
 

@@ -89,6 +89,12 @@
 #define GL_ALL_COMPLETED_NV               0x84F2
 #endif
 
+// Some of the legacy desktop GL headers used by TOGLES predate
+// GL_EXT_disjoint_timer_query, even when the target GLES headers expose it.
+#ifndef GL_GPU_DISJOINT_EXT
+#define GL_GPU_DISJOINT_EXT               0x8FBB
+#endif
+
 #ifndef GL_MAP_READ_BIT
 #define GL_MAP_READ_BIT                   0x0001
 #endif

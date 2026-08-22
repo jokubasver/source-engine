@@ -265,8 +265,8 @@ GL_EXT( GL_EXT_color_buffer_half_float, -1, -1 )
 GL_EXT( GL_EXT_texture_norm16, -1, -1 )
 GL_EXT( GL_EXT_buffer_storage, -1, -1 )
 
-// GPU frame timing (gl_gpu_timing). Uses the core glBeginQuery/glEndQuery/
-// glGetQueryObjectuiv entry points with the GL_TIME_ELAPSED_EXT target.
+// GPU frame timing (gl_gpu_timing). The 64-bit result getter is resolved
+// privately by glmgr.cpp to avoid changing COpenGLEntryPoints' public layout.
 GL_EXT( GL_EXT_disjoint_timer_query, -1, -1 )
 
 // Anisotropic filtering. Optional on GLES2 (and absent on many mobile GPUs, e.g.

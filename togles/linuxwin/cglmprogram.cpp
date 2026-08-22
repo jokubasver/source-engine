@@ -110,6 +110,8 @@ CGLMProgram::CGLMProgram( GLMContext *ctx, EGLMProgramType type )
 #endif
 
 	memset( &m_descs, 0, sizeof( m_descs ) );
+	memset( m_glslShaderVariants, 0, sizeof( m_glslShaderVariants ) );
+	m_failedGLSLShaderVariantMask = 0;
 
 	m_samplerMask    = 0;	// dxabstract sets this field later
 	m_samplerTypes   = 0;
@@ -144,6 +146,7 @@ CGLMProgram::CGLMProgram( GLMContext *ctx, EGLMProgramType type )
 CGLMProgram::~CGLMProgram( )
 {
 	m_ctx->CheckCurrent();
+	DeleteGLSLShaderVariants();
 
 	// if there is a GLSL shader, delete it
 	GLMShaderDesc *glslDesc = &m_descs[kGLMGLSL];
@@ -189,6 +192,8 @@ void	CGLMProgram::SetProgramText( char *text )
 	// scan newtext to find sections
 	// walk sections, and mark descs to indicate where text is at
 	
+	DeleteGLSLShaderVariants();
+
 	if (m_text)
 	{
 		free( m_text );
@@ -301,6 +306,108 @@ void	CGLMProgram::SetProgramText( char *text )
 			sscanf( lineStr, "// trans#%d label:ps-file %s ps-index %d ps-combo %d", &scratch, m_labelName, &m_labelIndex, &m_labelCombo );
 		}
 	}
+}
+
+void CGLMProgram::DeleteGLSLShaderVariants( void )
+{
+	for ( uint i = 0; i < ARRAYSIZE( m_glslShaderVariants ); ++i )
+	{
+		if ( m_glslShaderVariants[i] )
+		{
+			gGL->glDeleteShader( m_glslShaderVariants[i] );
+			m_glslShaderVariants[i] = 0;
+		}
+	}
+	m_failedGLSLShaderVariantMask = 0;
+}
+
+GLuint CGLMProgram::GetGLSLShaderVariant( uint extraKeyBits )
+{
+	GLMShaderDesc *pDesc = &m_descs[kGLMGLSL];
+	const uint nVariantBits = ( m_type == kGLMVertexProgram ) ?
+		( extraKeyBits & kGLMShaderPairClipPlanesEnabled ) :
+		( extraKeyBits & kGLMShaderPairExtraKeyMask );
+	const uint nDefaultBits = ( m_type == kGLMVertexProgram ) ?
+		kGLMShaderPairClipPlanesEnabled : kGLMShaderPairExtraKeyMask;
+
+	// The ordinary shader object retains the historical full-feature source.
+	// Only the state-specialized alternatives need separate GL shader objects.
+	if ( nVariantBits == nDefaultBits )
+	{
+		if ( !pDesc->m_compiled )
+			CompileActiveSources();
+		return pDesc->m_object.glsl;
+	}
+
+	if ( m_glslShaderVariants[nVariantBits] )
+		return m_glslShaderVariants[nVariantBits];
+
+	// The caller must fall back both stages together.  Returning the base shader
+	// for only one stage could mismatch the clip-distance varying interface.
+	if ( m_failedGLSLShaderVariantMask & ( 1u << nVariantBits ) )
+		return 0;
+
+	Assert( pDesc->m_textPresent && m_text );
+	const char *pSection = m_text + pDesc->m_textOffset;
+	const char *pInject = V_strstr( pSection, "precision " );
+	if ( !pInject || pInject >= pSection + pDesc->m_textLength )
+	{
+		m_failedGLSLShaderVariantMask |= ( 1u << nVariantBits );
+		return 0;
+	}
+
+	char szDefines[128];
+	V_snprintf( szDefines, sizeof(szDefines),
+		"#define TOGL_ENABLE_ALPHA_TEST %d\n#define TOGL_ENABLE_CLIP_PLANES %d\n",
+		( nVariantBits & kGLMShaderPairAlphaTestEnabled ) ? 1 : 0,
+		( nVariantBits & kGLMShaderPairClipPlanesEnabled ) ? 1 : 0 );
+
+	const GLchar *pSources[3] = { pSection, szDefines, pInject };
+	GLint nLengths[3] =
+	{
+		(GLint)( pInject - pSection ),
+		(GLint)V_strlen( szDefines ),
+		(GLint)( pDesc->m_textLength - ( pInject - pSection ) )
+	};
+
+	const GLuint nShader = gGL->glCreateShader( GLMProgTypeToGLSLEnum( m_type ) );
+	if ( !nShader )
+	{
+		m_failedGLSLShaderVariantMask |= ( 1u << nVariantBits );
+		return 0;
+	}
+	gGL->glShaderSource( nShader, ARRAYSIZE( pSources ), pSources, nLengths );
+
+	const bool bTimeShaderCompiles = ( CommandLine()->FindParm( "-gl_time_shader_compiles" ) != 0 );
+	CFastTimer shaderCompileTimer;
+	if ( bTimeShaderCompiles )
+		shaderCompileTimer.Start();
+	gGL->glCompileShader( nShader );
+	if ( bTimeShaderCompiles )
+	{
+		shaderCompileTimer.End();
+		gShaderCompileTime += shaderCompileTimer.GetDuration();
+		++gShaderCompileCount;
+	}
+
+	GLint bCompiled = GL_FALSE;
+	gGL->glGetShaderiv( nShader, GL_COMPILE_STATUS, &bCompiled );
+	if ( bCompiled == GL_FALSE )
+	{
+		GLint nLogLength = 0;
+		GLchar szLog[4096];
+		szLog[0] = 0;
+		gGL->glGetShaderiv( nShader, GL_INFO_LOG_LENGTH, &nLogLength );
+		gGL->glGetShaderInfoLog( nShader, sizeof(szLog), &nLogLength, szLog );
+		Warning( "GLSL state variant compile failed for %s (key 0x%x): %s\n",
+			m_shaderName, nVariantBits, szLog );
+		gGL->glDeleteShader( nShader );
+		m_failedGLSLShaderVariantMask |= ( 1u << nVariantBits );
+		return 0;
+	}
+
+	m_glslShaderVariants[nVariantBits] = nShader;
+	return nShader;
 }
 
 void	CGLMProgram::CompileActiveSources	( void )
@@ -718,6 +825,9 @@ CGLMShaderPair::CGLMShaderPair( GLMContext *ctx  )
 {
 	m_ctx = ctx;
 	m_vertexProg = m_fragmentProg = NULL;
+	m_extraKeyBits = 0xFFFFFFFF;
+	m_vertexShaderObject = 0;
+	m_fragmentShaderObject = 0;
 
 	m_program = gGL->glCreateProgram();
 
@@ -972,10 +1082,14 @@ static void ReportProgramBinaryCacheStats( const char *pszPairName, bool bHit, u
 
 #define GL_PROGRAM_BINARY_CACHE_DIR "glshadercache"
 
-static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, MD5Value_t &outHash )
+static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, MD5Value_t &outHash )
 {
 	MD5Context_t ctx;
 	MD5Init( &ctx );
+	// Bump when the source-prefix injection or key interpretation changes.  The
+	// injected defines are not part of CGLMProgram::m_text, so the source hash
+	// alone cannot invalidate old native binaries for those changes.
+	const uint nStateVariantSourceVersion = 1;
 
 	// Fold the driver version + renderer strings into the key so a driver update
 	// or different GPU invalidates the cache (binaries are not portable).
@@ -983,6 +1097,8 @@ static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, MD5Value_t 
 	const char *rendererStr = gGL->m_pGLDriverStrings[cGLRendererString] ? gGL->m_pGLDriverStrings[cGLRendererString] : "";
 	MD5Update( &ctx, (const unsigned char *)versionStr,  (unsigned int)V_strlen( versionStr ) );
 	MD5Update( &ctx, (const unsigned char *)rendererStr, (unsigned int)V_strlen( rendererStr ) );
+	MD5Update( &ctx, (const unsigned char *)&nStateVariantSourceVersion, sizeof(nStateVariantSourceVersion) );
+	MD5Update( &ctx, (const unsigned char *)&extraKeyBits, sizeof(extraKeyBits) );
 
 	// Hash the actual GLSL source text of both shaders (offset+length into m_text).
 	for ( int pass = 0; pass < 2; ++pass )
@@ -1107,7 +1223,7 @@ static void SaveCachedProgramBinary( GLuint program, const MD5Value_t &hash )
 }
 
 // glUseProgram() will be called as a side effect!
-bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
+bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits )
 {
 	bool bTimeShaderCompiles = (CommandLine()->FindParm( "-gl_time_shader_compiles" ) != 0);
 	// If using "-gl_time_shader_compiles", keeps track of total cycle count spent on shader compiles.
@@ -1150,22 +1266,23 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 		}
 
 		// attempt link. but first, detach any previously attached programs
-		if (m_vertexProg)
+		if ( m_vertexShaderObject )
 		{
-			gGL->glDetachShader(m_program, m_vertexProg->m_descs[kGLMGLSL].m_object.glsl);
-			m_vertexProg = NULL;			
+			gGL->glDetachShader( m_program, m_vertexShaderObject );
+			m_vertexShaderObject = 0;
 		}
 		
-		if (m_fragmentProg)
+		if ( m_fragmentShaderObject )
 		{
-			gGL->glDetachShader(m_program, m_fragmentProg->m_descs[kGLMGLSL].m_object.glsl);
-			m_fragmentProg = NULL;			
+			gGL->glDetachShader( m_program, m_fragmentShaderObject );
+			m_fragmentShaderObject = 0;
 		}
 
 		// Record the pair now (needed by the uniform-location query path even
 		// when we link from a cached binary, since it reads m_vertexProg/m_fragmentProg).
 		m_vertexProg = vp;
 		m_fragmentProg = fp;
+		m_extraKeyBits = extraKeyBits;
 
 		// force the locations for input attributes v0-vN to be at locations 0-N
 		// use the vertex attrib map to know which slots are live or not... oy!  we don't have that map yet... but it's OK.
@@ -1185,10 +1302,11 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 		// file, stale/corrupt binary, driver changed) we fall through to the
 		// normal source attach+link path, so this is always safe.
 		bool bUsedBinaryCache = false;
+		bool bUsedShaderVariantFallback = false;
 		if ( gl_program_binary_cache.GetInt() && gGL->glProgramBinary && gGL->glGetProgramBinary )
 		{
 			MD5Value_t pairHash;
-			ComputeShaderPairHash( vp, fp, pairHash );
+			ComputeShaderPairHash( vp, fp, m_extraKeyBits, pairHash );
 
 			CFastTimer binaryCacheTimer;
 			binaryCacheTimer.Start();
@@ -1219,16 +1337,27 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 			}
 #endif
 
-			// Deferred compile: NewProgram skipped CompileActiveSources().
-			// We only need the compiled shader objects on the cache-miss path.
-			if ( !vp->m_descs[kGLMGLSL].m_compiled )
-				vp->CompileActiveSources();
-			if ( !fp->m_descs[kGLMGLSL].m_compiled )
-				fp->CompileActiveSources();
+			// Compile/select the state-specialized shader objects lazily.  The
+			// common opaque pair contains no alpha-test or clip-plane discard.
+			m_vertexShaderObject = vp->GetGLSLShaderVariant( m_extraKeyBits );
+			m_fragmentShaderObject = fp->GetGLSLShaderVariant( m_extraKeyBits );
+			if ( !m_vertexShaderObject || !m_fragmentShaderObject )
+			{
+				// A varying must be produced and consumed by matching stages.  If
+				// either specialization fails, use the historical full-feature
+				// shaders for both stages rather than mixing interfaces.
+				if ( !vp->m_descs[kGLMGLSL].m_compiled )
+					vp->CompileActiveSources();
+				if ( !fp->m_descs[kGLMGLSL].m_compiled )
+					fp->CompileActiveSources();
+				m_vertexShaderObject = vp->m_descs[kGLMGLSL].m_object.glsl;
+				m_fragmentShaderObject = fp->m_descs[kGLMGLSL].m_object.glsl;
+				bUsedShaderVariantFallback = true;
+			}
 
 			// now attach
-			gGL->glAttachShader( m_program, vp->m_descs[kGLMGLSL].m_object.glsl );
-			gGL->glAttachShader( m_program, fp->m_descs[kGLMGLSL].m_object.glsl );
+			gGL->glAttachShader( m_program, m_vertexShaderObject );
+			gGL->glAttachShader( m_program, m_fragmentShaderObject );
 
 			// now link
 			gGL->glLinkProgram( m_program );
@@ -1254,10 +1383,10 @@ bool CGLMShaderPair::SetProgramPair( CGLMProgram *vp, CGLMProgram *fp )
 			else
 			{
 				// Link succeeded from source: persist the binary for next launch.
-				if ( gl_program_binary_cache.GetInt() && gGL->glGetProgramBinary )
+				if ( !bUsedShaderVariantFallback && gl_program_binary_cache.GetInt() && gGL->glGetProgramBinary )
 				{
 					MD5Value_t pairHash;
-					ComputeShaderPairHash( vp, fp, pairHash );
+					ComputeShaderPairHash( vp, fp, m_extraKeyBits, pairHash );
 					SaveCachedProgramBinary( m_program, pairHash );
 					++s_nProgramBinarySaves;
 				}
@@ -1305,7 +1434,7 @@ bool	CGLMShaderPair::RefreshProgramPair		( void )
 
 	if (vpgood && fpgood)
 	{
-		SetProgramPair( vp, fp );
+		SetProgramPair( vp, fp, m_extraKeyBits );
 	}
 	else
 	{
@@ -1528,7 +1657,7 @@ CGLMShaderPair	*CGLMShaderPairCache::SelectShaderPairInternal( CGLMProgram *vp, 
 	newentry->m_extraKeyBits = extraKeyBits;
 	newentry->m_pair = new CGLMShaderPair( m_ctx );
 	Assert( newentry->m_pair );
-	newentry->m_pair->SetProgramPair( vp, fp );
+	newentry->m_pair->SetProgramPair( vp, fp, extraKeyBits );
 
 	if (loglevel >= 2)  // say a little bit more
 	{

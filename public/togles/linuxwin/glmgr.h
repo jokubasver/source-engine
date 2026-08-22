@@ -1329,7 +1329,7 @@ class GLMContext
 
 			// options for Blit (replacement for ResolveTex and BlitTex)
 			// pass NULL for dstTex if you want to target GL_BACK with the blit.  You get y-flip with that, don't change the dstrect yourself.		
-		void	Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter );
+		void	Blit2( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter, bool restoreDrawingFBO = true );
 
 			// tex blit (via FBO blit)
 		void	BlitTex( CGLMTex *srcTex, GLMRect *srcRect, int srcFace, int srcMip, CGLMTex *dstTex, GLMRect *dstRect, int dstFace, int dstMip, uint filter, bool useBlitFB = true );
@@ -1430,6 +1430,8 @@ class GLMContext
 				
 		// drawing
 #if 1 //ifndef OSX
+		void TraceDraw( GLenum mode, GLuint start, GLuint end, GLsizei count );
+		FORCEINLINE void RecordDrawStats( GLenum mode, GLuint start, GLuint end, GLsizei count );
 		FORCEINLINE void DrawRangeElements(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf );
 		void DrawRangeElementsNonInline(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf );
 #else
@@ -1456,7 +1458,12 @@ class GLMContext
 
 		// writers for the state block inputs
 		
-		FORCEINLINE void	WriteAlphaTestEnable( GLAlphaTestEnable_t *src ) { m_bDirtyRenderStates |= m_AlphaTestEnable.Write( src ); }
+		FORCEINLINE void	WriteAlphaTestEnable( GLAlphaTestEnable_t *src )
+		{
+			if ( !( m_AlphaTestEnable.GetData() == *src ) )
+				m_bDirtyPrograms = true;
+			m_bDirtyRenderStates |= m_AlphaTestEnable.Write( src );
+		}
 		FORCEINLINE void	WriteAlphaTestFunc( GLAlphaTestFunc_t *src ) { m_bDirtyRenderStates |= m_AlphaTestFunc.Write( src ); }
 		FORCEINLINE void	WriteAlphaToCoverageEnable( GLAlphaToCoverageEnable_t *src ) { m_bDirtyRenderStates |= m_AlphaToCoverageEnable.Write( src ); }
 		FORCEINLINE void	WriteCullFaceEnable( GLCullFaceEnable_t *src ) { m_bDirtyRenderStates |= m_CullFaceEnable.Write( src ); }
@@ -1466,7 +1473,10 @@ class GLMContext
 		FORCEINLINE void	WriteClipPlaneEnable( GLClipPlaneEnable_t *src, int which )
 		{
 			if ( !( m_ClipPlaneEnable.GetDataIndex( which ) == *src ) )
+			{
 				++m_nClipPlaneStateRevision;
+				m_bDirtyPrograms = true;
+			}
 			m_bDirtyRenderStates |= m_ClipPlaneEnable.WriteIndex( src, which );
 		}
 		FORCEINLINE void	WriteClipPlaneEquation( GLClipPlaneEquation_t *src, int which ) { m_bDirtyRenderStates |= m_ClipPlaneEquation.WriteIndex( src, which ); }
@@ -1570,11 +1580,6 @@ class GLMContext
 		FORCEINLINE void SetBufAndVertexAttribPointer( uint nIndex, GLuint nGLName, GLuint stride, GLuint datatype, GLboolean normalized, GLuint nCompCount, const void *pBuf, uint nRevision )
 		{
 			VertexAttribs_t &curAttribs = m_boundVertexAttribs[nIndex];
-			if ( nGLName != m_nBoundGLBuffer[kGLMVertexBuffer] )
-			{
-				m_nBoundGLBuffer[kGLMVertexBuffer] = nGLName;
-				gGL->glBindBuffer( GL_ARRAY_BUFFER, nGLName );
-			}
 			if ( ( curAttribs.m_nGLName == nGLName ) &&
 				( curAttribs.m_pPtr == pBuf ) &&
 				( curAttribs.m_revision == nRevision ) &&
@@ -1584,6 +1589,11 @@ class GLMContext
 				( curAttribs.m_nCompCount == nCompCount ) )
 			{
 				return;
+			}
+			if ( nGLName != m_nBoundGLBuffer[kGLMVertexBuffer] )
+			{
+				m_nBoundGLBuffer[kGLMVertexBuffer] = nGLName;
+				gGL->glBindBuffer( GL_ARRAY_BUFFER, nGLName );
 			}
 
 			curAttribs.m_nCompCount = nCompCount;
@@ -1887,24 +1897,48 @@ class GLMContext
 		// per frame. Ping-pong query objects so result reads never stall.
 		GLuint							m_gpuTimerQuery[2];		// ping-pong query objects
 		int								m_nGpuTimerIndex;		// slot currently being recorded into
-		bool							m_bGpuTimerAvailable;	// driver exposes GL_EXT_disjoint_timer_query
+		bool							m_bGpuTimerAvailable;	// extension and 64-bit result getter are available
+		bool							m_bGpuTimingFrameActive;	// diagnostics requested for this frame
 		bool							m_bGpuTimerArmed;		// a timer query is open for the current frame
 		bool							m_bGpuTimerHasRecorded;	// at least one frame has been recorded
+		bool							m_bGpuTimerResultValid;	// a fresh, non-disjoint result was read this frame
 		uint64							m_nGpuTimeNanos;		// last completed GPU frame time (ns)
 		float							m_flGpuFrameStart;		// Plat_FloatTime at BeginFrame
 		float							m_flGpuLastCpuMs;		// last frame command-stream CPU time
 		float							m_flGpuReportStart;		// Plat_FloatTime at last report
 		int								m_nGpuReportFrames;		// frames since last report
+		int								m_nGpuReportSamples;		// valid GPU query results since last report
 		float							m_flGpuAccumMs;			// GPU ms accumulated since last report
 		float							m_flCpuAccumMs;			// CPU ms accumulated since last report
 		float							m_flCpuPreSwapAccumMs;	// CPU ms excl. swap, accumulated since last report
+		float							m_flSwapWindowAccumMs;	// time spent inside SDL_GL_SwapWindow
 		float							m_flGpuFrameEndPreSwap;	// Plat_FloatTime right before the swap in Present
 		int								m_nGpuFrameDraws;		// draw calls + clears this frame
+		int							m_nGpuFramePhysicalDraws;	// actual glDraw* calls this frame
+		int							m_nGpuFrameClears;		// D3D clear submissions this frame
+		uint64						m_nGpuFrameIndices;		// indices submitted by actual GL draws
+		uint64						m_nGpuFrameTriangles;		// triangle primitives submitted by actual GL draws
+		uint64						m_nGpuFrameVertexSpan;		// summed min/max vertex ranges (not unique VS invocations)
+		int							m_nGpuFrameAlphaTestDraws;	// draws using the alpha-test/discard shader variant
+		uint64						m_nGpuFrameAlphaTestTriangles;
+		int							m_nGpuFrameNoCullDraws;		// two-sided/rasterizer-cull-disabled draws
+		uint64						m_nGpuFrameNoCullTriangles;
+		int							m_nGpuFrameBlendDraws;		// blending-enabled draws
+		uint64						m_nGpuFrameBlendTriangles;
+		uint64						m_nGpuFrameEarlyZCandidateTriangles;	// state-eligible; shader-native discard is unknown
+		int									m_nGpuDrawTraceMinIndices;	// positive for one-frame gl_draw_trace capture
+		int									m_nGpuDrawTraceDrawIndex;
 		int								m_nGpuFrameProgramChanges;	// glUseProgram calls this frame
 		int								m_nGpuFrameUniformCalls;	// uniform upload GL calls this frame
 		int								m_nGpuFrameUniformsSet;		// float4 constants uploaded this frame
 		int								m_nGpuFrameResolves;		// MSAA resolves this frame
 		int								m_nGpuFrameBlits;			// blit operations this frame
+		int								m_nGpuFramePhysicalBlits;	// glBlitFramebuffer calls this frame
+		int								m_nGpuFrameTwoStepBlits;	// logical blits expanded through scratch
+		int								m_nGpuFrameResolvingBlits;	// logical blits whose source is multisampled
+		int								m_nGpuFrameScalingBlits;	// logical blits with differing dimensions
+		int								m_nGpuFrameBackbufferBlits;	// logical blits targeting the backbuffer
+		uint64							m_nGpuFrameBlitPixels;		// destination pixels written by physical blits
 
 		struct TextureEntry_t
 		{
@@ -2010,6 +2044,56 @@ FORCEINLINE void GLMContext::FlushRenderStates()
 }
 
 #if 1 //ifndef OSX
+
+FORCEINLINE void GLMContext::RecordDrawStats( GLenum mode, GLuint start, GLuint end, GLsizei count )
+{
+	if ( m_nGpuDrawTraceMinIndices > 0 && count >= m_nGpuDrawTraceMinIndices )
+		TraceDraw( mode, start, end, count );
+
+	if ( !m_bGpuTimingFrameActive )
+		return;
+
+	++m_nGpuFramePhysicalDraws;
+	if ( count > 0 )
+		m_nGpuFrameIndices += (uint64)count;
+
+	uint64 nTriangles = 0;
+	if ( mode == GL_TRIANGLES && count >= 3 )
+		nTriangles = (uint64)count / 3;
+	else if ( ( mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN ) && count >= 3 )
+		nTriangles = (uint64)count - 2;
+
+	m_nGpuFrameTriangles += nTriangles;
+	if ( count > 0 && end >= start )
+		m_nGpuFrameVertexSpan += (uint64)end - (uint64)start + 1;
+
+	const bool bAlphaTest = ( m_AlphaTestEnable.GetData().enable != 0 );
+	const bool bBlend = ( m_BlendEnable.GetData().enable != 0 );
+	const bool bNoCull = ( m_CullFaceEnable.GetData().enable == 0 );
+	const bool bClip = m_ClipPlaneEnable.GetDataIndex( 0 ).enable ||
+		m_ClipPlaneEnable.GetDataIndex( 1 ).enable;
+
+	if ( bAlphaTest )
+	{
+		++m_nGpuFrameAlphaTestDraws;
+		m_nGpuFrameAlphaTestTriangles += nTriangles;
+	}
+	if ( bNoCull )
+	{
+		++m_nGpuFrameNoCullDraws;
+		m_nGpuFrameNoCullTriangles += nTriangles;
+	}
+	if ( bBlend )
+	{
+		++m_nGpuFrameBlendDraws;
+		m_nGpuFrameBlendTriangles += nTriangles;
+	}
+	if ( m_DepthTestEnable.GetData().enable && m_DepthMask.GetData().mask &&
+		!bAlphaTest && !bBlend && !bClip )
+	{
+		m_nGpuFrameEarlyZCandidateTriangles += nTriangles;
+	}
+}
 
 FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid *indices, uint baseVertex, CGLMBuffer *pIndexBuf )
 {
@@ -2128,6 +2212,7 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 
 	if ( m_pBoundPair )
 	{
+		RecordDrawStats( mode, start, end, count );
 		VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
 		if ( m_bUseDrawElementsBaseVertex )
 		{
