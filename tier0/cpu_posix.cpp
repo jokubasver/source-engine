@@ -176,8 +176,11 @@ uint64 CalculateCPUFreq()
 
 	return period;
 #else
-	// ARM hard-coded frequency
-	return (uint64)2000000000;
+	// ARM: try /proc first (covers RK3326 1.5GHz correctly), fall back to generic
+	uint64 nProcHz = GetCPUFreqFromPROC();
+	if ( nProcHz )
+		return nProcHz;
+	return (uint64)1500000000;
 #endif // if !ARM
 #endif // if APPLE
 }

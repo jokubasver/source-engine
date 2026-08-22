@@ -156,7 +156,7 @@ static bool IsWin98OrOlder()
 
 static bool CheckSSETechnology(void)
 {
-#if defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #elif defined( _X360 ) || defined( _PS3 )
 	return true;
@@ -176,7 +176,7 @@ static bool CheckSSETechnology(void)
 
 static bool CheckSSE2Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -189,7 +189,7 @@ static bool CheckSSE2Technology(void)
 
 bool CheckSSE3Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,ecx;
@@ -202,7 +202,7 @@ bool CheckSSE3Technology(void)
 
 bool CheckSSSE3Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	// SSSE 3 is implemented by both Intel and AMD
@@ -217,7 +217,7 @@ bool CheckSSSE3Technology(void)
 
 bool CheckSSE41Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	// SSE 4.1 is implemented by both Intel and AMD
@@ -233,7 +233,7 @@ bool CheckSSE41Technology(void)
 
 bool CheckSSE42Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	// SSE4.2 is an Intel-only feature
@@ -253,7 +253,7 @@ bool CheckSSE42Technology(void)
 
 bool CheckSSE4aTechnology( void )
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__)
+#if defined( _X360 ) || defined( _PS3 ) || defined(__SANITIZE_ADDRESS__) || defined (__arm__) || defined (__aarch64__)
 	return false;
 #else
 	// SSE 4a is an AMD-only feature
@@ -273,7 +273,7 @@ bool CheckSSE4aTechnology( void )
 
 static bool Check3DNowTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined(__SANITIZE_ADDRESS__) || (defined(PLATFORM_BSD) && defined(COMPILER_CLANG))
+#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined (__aarch64__) || defined(__SANITIZE_ADDRESS__) || (defined(PLATFORM_BSD) && defined(COMPILER_CLANG))
 	return false;
 #else
 	uint32 eax, unused;
@@ -293,7 +293,7 @@ static bool Check3DNowTechnology(void)
 
 static bool CheckCMOVTechnology()
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined(__SANITIZE_ADDRESS__)
+#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined (__aarch64__) || defined(__SANITIZE_ADDRESS__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -306,7 +306,7 @@ static bool CheckCMOVTechnology()
 
 static bool CheckFCMOVTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined(__SANITIZE_ADDRESS__)
+#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined (__aarch64__) || defined(__SANITIZE_ADDRESS__)
 	return false;
 #else
     uint32 eax,ebx,edx,unused;
@@ -319,7 +319,7 @@ static bool CheckFCMOVTechnology(void)
 
 static bool CheckRDTSCTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined(__SANITIZE_ADDRESS__)
+#if defined( _X360 ) || defined( _PS3 ) || defined (__arm__) || defined (__aarch64__) || defined(__SANITIZE_ADDRESS__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -335,7 +335,7 @@ const tchar* GetProcessorVendorId()
 {
 #if defined( _X360 ) || defined( _PS3 )
 	return "PPC";
-#elif defined ( __arm__ )
+#elif defined ( __arm__ ) || defined ( __aarch64__ )
 	return "ARM";
 #else
 	uint32 unused, VendorIDRegisters[3];

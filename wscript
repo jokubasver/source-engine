@@ -534,11 +534,15 @@ def configure(conf):
 		flags += ['-fsigned-char']
 
 	if conf.env.DEST_CPU == 'aarch64':
-		# RK3326/Cortex-A35: tune specifically for this core
-		flags += ['-mtune=cortex-a35']
-		flags += ['-march=armv8-a+fp+simd+crypto+crc']
+		# RK3326/Cortex-A35: single -mcpu with extensions avoids -mcpu/-march conflict spam under LTO
+		flags += ['-mcpu=cortex-a35+crc+crypto']
+		# only add outline-atomics if compiler supports it
+		try:
+			if conf.check_cxx(fragment='int main(){return 0;}', cxxflags=['-moutline-atomics'], msg='Checking for -moutline-atomics', mandatory=False):
+				flags += ['-moutline-atomics']
+		except:
+			pass
 	elif conf.env.DEST_CPU == 'arm':
-		# RK3326/Cortex-A35: tune specifically for this core
 		flags += ['-mcpu=cortex-a35']
 		flags += ['-march=armv7-a', '-mfpu=neon']
 

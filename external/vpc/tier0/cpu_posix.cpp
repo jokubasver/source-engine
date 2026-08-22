@@ -98,6 +98,27 @@ uint64 CalculateCPUFreq()
 	}
 #endif
 
+#if defined(__arm__) || defined(__aarch64__)
+	{
+		FILE *fp = fopen( "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq", "r" );
+		if ( fp )
+		{
+			char buf[256];
+			uint64 retVal = 0;
+			buf[0] = 0;
+			if ( fread( buf, 1, sizeof(buf)-1, fp ) )
+				retVal = (uint64)atoll( buf );
+			fclose(fp);
+			if ( retVal )
+				return retVal * 1000;
+		}
+		uint64 nProcHz = GetCPUFreqFromPROC();
+		if ( nProcHz )
+			return nProcHz;
+		return (uint64)1500000000;
+	}
+#endif
+
   // Compute the period. Loop until we get 3 consecutive periods that
   // are the same to within a small error. The error is chosen
   // to be +/- 0.02% on a P-200.

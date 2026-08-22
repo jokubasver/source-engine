@@ -30,7 +30,7 @@ const tchar* GetProcessorVendorId();
 
 static bool cpuid(uint32 function, uint32& out_eax, uint32& out_ebx, uint32& out_ecx, uint32& out_edx)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #elif defined(GNUC)
 	asm("mov %%ebx, %%esi\n\t"
@@ -90,7 +90,7 @@ static bool cpuid(uint32 function, uint32& out_eax, uint32& out_ebx, uint32& out
 
 static bool CheckMMXTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 ) 
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__) 
 	return true;
 #else
     uint32 eax,ebx,edx,unused;
@@ -107,7 +107,7 @@ static bool CheckMMXTechnology(void)
 //-----------------------------------------------------------------------------
 static bool IsWin98OrOlder()
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined( POSIX )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__) || defined( POSIX )
 	return false;
 #else
 	bool retval = false;
@@ -152,7 +152,7 @@ static bool IsWin98OrOlder()
 
 static bool CheckSSETechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return true;
 #else
 	if ( IsWin98OrOlder() )
@@ -172,7 +172,7 @@ static bool CheckSSETechnology(void)
 
 static bool CheckSSE2Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -185,7 +185,7 @@ static bool CheckSSE2Technology(void)
 
 bool CheckSSE3Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,ecx;
@@ -198,7 +198,7 @@ bool CheckSSE3Technology(void)
 
 bool CheckSSSE3Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	// SSSE 3 is implemented by both Intel and AMD
@@ -213,7 +213,7 @@ bool CheckSSSE3Technology(void)
 
 bool CheckSSE41Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	// SSE 4.1 is implemented by both Intel and AMD
@@ -229,7 +229,7 @@ bool CheckSSE41Technology(void)
 
 bool CheckSSE42Technology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	// SSE4.2 is an Intel-only feature
@@ -249,7 +249,7 @@ bool CheckSSE42Technology(void)
 
 bool CheckSSE4aTechnology( void )
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	// SSE 4a is an AMD-only feature
@@ -269,7 +269,7 @@ bool CheckSSE4aTechnology( void )
 
 static bool Check3DNowTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	uint32 eax, unused;
@@ -289,7 +289,7 @@ static bool Check3DNowTechnology(void)
 
 static bool CheckCMOVTechnology()
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -302,7 +302,7 @@ static bool CheckCMOVTechnology()
 
 static bool CheckFCMOVTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
     uint32 eax,ebx,edx,unused;
@@ -315,7 +315,7 @@ static bool CheckFCMOVTechnology(void)
 
 static bool CheckRDTSCTechnology(void)
 {
-#if defined( _X360 ) || defined( _PS3 )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__)
 	return false;
 #else
 	uint32 eax,ebx,edx,unused;
@@ -331,6 +331,8 @@ const tchar* GetProcessorVendorId()
 {
 #if defined( _X360 ) || defined( _PS3 )
 	return "PPC";
+#elif defined(__arm__) || defined(__aarch64__)
+	return "ARM";
 #else
 	uint32 unused, VendorIDRegisters[3];
 
@@ -410,7 +412,7 @@ static bool HTSupported(void)
 // http://www.intel.com/Assets/PDF/appnote/241618.pdf
 int LogicalProcessorsPerCore()
 {
-#if defined( _X360 ) || defined( _PS3 ) || defined( LINUX )
+#if defined( _X360 ) || defined( _PS3 ) || defined(__arm__) || defined(__aarch64__) || defined( LINUX )
 	return 2; // 
 #elif defined(_WIN32) 
 	uint32 nMaxStandardFnSupported, nVendorId[3];
