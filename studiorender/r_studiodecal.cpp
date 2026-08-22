@@ -110,7 +110,7 @@ void CStudioRender::RemoveDecalListFromLRU( StudioDecalHandle_t h )
 //-----------------------------------------------------------------------------
 StudioDecalHandle_t CStudioRender::CreateDecalList( studiohwdata_t *pHardwareData )
 {
-	if ( !pHardwareData || pHardwareData->m_NumLODs <= 0 )
+	if ( !pHardwareData || pHardwareData->m_NumLODs <= 0 || pHardwareData->m_NumLODs > 32 )
 		return STUDIORENDER_DECAL_INVALID;
 
 	// NOTE: This function is called directly without queueing 

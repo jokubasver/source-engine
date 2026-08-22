@@ -2475,7 +2475,11 @@ FORCEINLINE void GLMContext::SetProgramParametersI( EGLMProgramType type, uint b
 
 FORCEINLINE void GLMContext::SetSamplerDirty( int sampler )
 {
-	Assert( sampler < GLM_SAMPLER_COUNT );
+	// Vertex samplers are D3DVERTEXTEXTURESAMPLER0..3 (257-260) — outside the 16-slot
+	// dirty array which only tracks pixel samplers 0-15. LTO proved this overflows
+	// 241 bytes into adjacent heap state in Release (Assert stripped).
+	if ( (unsigned)sampler >= GLM_SAMPLER_COUNT )
+		return;
 	m_nDirtySamplers[m_nNumDirtySamplers] = sampler;
 	m_nNumDirtySamplers += m_nDirtySamplerFlags[sampler];
 	m_nDirtySamplerFlags[sampler] = 0;
@@ -2483,7 +2487,8 @@ FORCEINLINE void GLMContext::SetSamplerDirty( int sampler )
 
 FORCEINLINE void GLMContext::SetSamplerTex( int sampler, CGLMTex *tex ) 
 { 
-	Assert( sampler < GLM_SAMPLER_COUNT );
+	if ( (unsigned)sampler >= GLM_SAMPLER_COUNT )
+		return;
 	// Delta-check: skip the glBindTexture when this TMU already holds this texture.
 	// Source re-sets the same texture to the same sampler constantly; on Mali each
 	// redundant glBindTexture is real driver descriptor-table overhead.

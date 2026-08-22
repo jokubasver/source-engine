@@ -2623,6 +2623,15 @@ bool CShaderManager::LoadAndCreateShaders( ShaderLookup_t &lookup, bool bVertexS
 
 	// FIXME: should make lookup and ShaderStaticCombos_t are pool allocated.
 	int i;
+	// LTO: validate header field before alloc (corrupt/truncated shader -> m_nDynamicCombos = -1 => SIZE_MAX)
+	if ( pHeader->m_nDynamicCombos <= 0 || pHeader->m_nDynamicCombos > 32768 )
+	{
+		Warning( "Invalid shader dynamic combos %d for %s\n", pHeader->m_nDynamicCombos, pName );
+		lookup.m_Flags |= SHADER_FAILED_LOAD;
+		if ( hFile != FILESYSTEM_INVALID_HANDLE )
+			g_pFullFileSystem->Close( hFile );
+		return false;
+	}
 	lookup.m_ShaderStaticCombos.m_nCount = pHeader->m_nDynamicCombos;
 	lookup.m_ShaderStaticCombos.m_pHardwareShaders = new HardwareShader_t[pHeader->m_nDynamicCombos];
 	if ( IsPC() && m_bCreateShadersOnDemand )
