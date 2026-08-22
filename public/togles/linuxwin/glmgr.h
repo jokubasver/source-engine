@@ -2222,19 +2222,42 @@ FORCEINLINE void GLMContext::DrawRangeElements(	GLenum mode, GLuint start, GLuin
 	{
 		RecordDrawStats( mode, start, end, count );
 		VPROF_BUDGET( "ToGL_GLDraw", "ToGL_GLDraw" );
-		if ( m_bUseDrawElementsBaseVertex )
+
+		GLuint tightStart = start, tightEnd = end;
+		// Engine-supplied ranges are often wildly bloated (heavy scene: span 2.36M vs 0.26M
+		// indices = 9x). A tight range lets the Mali tiler fetch only the referenced vertex
+		// blocks instead of the whole window. Scanning count uint16s is far cheaper than the
+		// wasted vertex fetch when the span is sparse.
+		if ( ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
+		{
+			const uint16 *pIdx = (const uint16 *)indicesActual;
+			uint16 nMin = 0xFFFF, nMax = 0;
+			for ( int i = 0; i < count; ++i )
+			{
+				const uint16 n = pIdx[i];
+				if ( n < nMin ) nMin = n;
+				if ( n > nMax ) nMax = n;
+			}
+			if ( nMax >= nMin )
+			{
+				tightStart = nMin;
+				tightEnd = nMax;
+			}
+		}
+
+		if ( gGL->glDrawRangeElementsBaseVertex )
+		{
+			gGL->glDrawRangeElementsBaseVertex( mode, tightStart, tightEnd, count, type, indicesActual, baseVertex );
+		}
+		else if ( m_bUseDrawElementsBaseVertex )
 		{
 			gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
-		}
-		else if ( gGL->glDrawRangeElementsBaseVertex )
-		{
-			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 		}
 		else
 		{
 			if ( baseVertex == 0 )
 			{
-				gGL->glDrawRangeElements( mode, start, end, count, type, indicesActual );
+				gGL->glDrawRangeElements( mode, tightStart, tightEnd, count, type, indicesActual );
 			}
 			else
 			{

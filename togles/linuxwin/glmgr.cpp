@@ -5995,10 +5995,29 @@ void GLMContext::DrawRangeElementsNonInline( GLenum mode, GLuint start, GLuint e
 	if ( m_pBoundPair )
 	{
 		RecordDrawStats( mode, start, end, count );
-		if ( m_bUseDrawElementsBaseVertex )
+
+		GLuint tightStart = start, tightEnd = end;
+		if ( ( type == GL_UNSIGNED_SHORT ) && ( end >= start ) && ( (uint)( end - start + 1 ) > (uint)count ) )
+		{
+			const uint16 *pIdx = (const uint16 *)indicesActual;
+			uint16 nMin = 0xFFFF, nMax = 0;
+			for ( int i = 0; i < count; ++i )
+			{
+				const uint16 n = pIdx[i];
+				if ( n < nMin ) nMin = n;
+				if ( n > nMax ) nMax = n;
+			}
+			if ( nMax >= nMin )
+			{
+				tightStart = nMin;
+				tightEnd = nMax;
+			}
+		}
+
+		if ( gGL->glDrawRangeElementsBaseVertex )
+			gGL->glDrawRangeElementsBaseVertex( mode, tightStart, tightEnd, count, type, indicesActual, baseVertex );
+		else if ( m_bUseDrawElementsBaseVertex )
 			gGL->glDrawElementsBaseVertex( mode, count, type, indicesActual, baseVertex );
-		else
-			gGL->glDrawRangeElementsBaseVertex( mode, start, end, count, type, indicesActual, baseVertex );
 
 #if GLMDEBUG
 		if ( m_slowCheckEnable )
