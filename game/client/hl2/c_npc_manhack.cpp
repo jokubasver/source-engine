@@ -15,7 +15,7 @@
 class C_NPC_Manhack : public C_AI_BaseNPC
 {
 public:
-	C_NPC_Manhack() {}
+	C_NPC_Manhack() : m_pEngineSound1( NULL ), m_pEngineSound2( NULL ), m_pBladeSound( NULL ) {}
 
 	DECLARE_CLASS( C_NPC_Manhack, C_AI_BaseNPC );
 	DECLARE_CLIENTCLASS();

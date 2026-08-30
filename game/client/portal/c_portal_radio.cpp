@@ -38,6 +38,8 @@ public:
 	DECLARE_CLIENTCLASS();
 	DECLARE_CLASS( C_Portal_Dinosaur, C_PhysicsProp );
 
+	C_Portal_Dinosaur( void ) : m_pNormalSound( NULL ), m_pStaticSound( NULL ), m_pSignalSound( NULL ) {}
+
 				~C_Portal_Dinosaur( void );
 
 	virtual void Spawn();
