@@ -949,7 +949,8 @@ void CShaderManager::Shutdown()
 	{
 		SaveShaderCache("glshaders.cfg");
 	}
-	ToglFlushProgramBinarySaves();
+	// Shutdown: drain the whole queue so no buffered binaries leak at exit.
+	ToglFlushProgramBinarySaves( true );
 #endif
 
 	DestroyAllShaders();

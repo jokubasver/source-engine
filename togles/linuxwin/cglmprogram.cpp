@@ -1148,22 +1148,34 @@ static void WriteQueuedBinarySave( const QueuedBinarySave_t &save )
 	}
 }
 
-void ToglFlushProgramBinarySaves( void )
+// Spread SD-card writes across frames: a whole-queue drain after a link burst
+// stalls the present path for seconds on low-end devices.  Each call from the
+// present path writes at most this many binaries and leaves the rest queued.
+static const int kMaxBinarySavesPerFlush = 8;
+
+void ToglFlushProgramBinarySaves( bool bFlushAll )
 {
 	int nCount = s_queuedBinarySaves.Count();
 	if ( !nCount )
 		return;
 
+	int nBatch = ( bFlushAll || nCount < kMaxBinarySavesPerFlush ) ? nCount : kMaxBinarySavesPerFlush;
+
 	g_pFullFileSystem->CreateDirHierarchy( GL_PROGRAM_BINARY_CACHE_DIR, "MOD" );
 
-	for ( int i = 0; i < nCount; ++i )
+	size_t nBytesFreed = 0;
+	for ( int i = 0; i < nBatch; ++i )
 	{
 		WriteQueuedBinarySave( s_queuedBinarySaves[i] );
+		nBytesFreed += (size_t)s_queuedBinarySaves[i].m_nBytes;
 		free( s_queuedBinarySaves[i].m_pData );
 	}
 
-	s_queuedBinarySaves.RemoveAll();
-	s_nQueuedBinaryBytes = 0;
+	for ( int i = 0; i < nBatch; ++i )
+	{
+		s_queuedBinarySaves.Remove( 0 );
+	}
+	s_nQueuedBinaryBytes = ( nBytesFreed >= s_nQueuedBinaryBytes ) ? 0 : s_nQueuedBinaryBytes - nBytesFreed;
 }
 
 static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
@@ -1606,14 +1618,13 @@ CGLMShaderPairCache::CGLMShaderPairCache( GLMContext *ctx  )
 	m_waysLg2 = gl_shaderpair_cacheways_lg2.GetInt();
 	if ( V_stristr(gGL->m_pGLDriverStrings[cGLVendorString], "arm") != NULL )
 	{
-		// On mobile TBDR GPUs (Mali G31 etc.), 8 ways (lg2=3) is ample
-		// and saves ~960 KiB per context (32,768→4,096 entries × 40 B).
-		// The desktop default (lg2=5 → 32 ways) wastes RAM with no culling
-		// benefit on low-vertex-count mobile workloads.  Users who set the
-		// convar explicitly still get their value as long as it's ≥3.
+		// State-variant specialization (alpha-test/clip-plane) multiplies the
+		// live pair population, and every eviction recompiles/relinks the pair
+		// synchronously on the frame path (hundreds of ms on Mali's slow
+		// compiler) plus a program-binary readback.  Keep the desktop 32-way
+		// capacity so the whole working set stays resident; only clamp to the
+		// absolute floor for explicit user values.
 		if (m_waysLg2 < 3)
-			m_waysLg2 = 3;
-		if (m_waysLg2 == 5)		// convar likely still at default "5"
 			m_waysLg2 = 3;
 	}
 	else

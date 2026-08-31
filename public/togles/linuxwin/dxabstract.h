@@ -1426,8 +1426,10 @@ TOGL_INTERFACE void D3DPERF_SetOptions( DWORD dwOptions );
 
 // Drain the queued glshadercache/*.bin program-binary writes (see
 // cglmprogram.cpp).  Call at frame/load boundaries; gameplay never blocks on
-// SD-card writes for shader binaries.
-TOGL_INTERFACE void ToglFlushProgramBinarySaves( void );
+// SD-card writes for shader binaries.  bFlushAll drains the entire queue at
+// once (shutdown paths); the default throttles to a few files per call so the
+// present path never stalls on disk I/O.
+TOGL_INTERFACE void ToglFlushProgramBinarySaves( bool bFlushAll = false );
 
 TOGL_INTERFACE HRESULT D3DXCompileShader(
 	LPCSTR                          pSrcData,
