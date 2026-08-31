@@ -1116,8 +1116,10 @@ static void ReportProgramBinaryCacheStats( const char *pszPairName, bool bHit, u
 // Program binaries are fetched from the driver immediately after a successful
 // link, but the file write is queued: synchronous SD-card writes during
 // gameplay caused visible hitching on low-end ARM devices.  The queue is
-// drained by ToglFlushProgramBinarySaves() from frame/load boundaries, or
-// inline once it exceeds gl_binary_save_queue_mb.
+// drained by ToglFlushProgramBinarySaves() from frame/load boundaries and by
+// ToglFlushProgramBinarySavesAll() at shutdown.  Reaching the queue cap never
+// performs a write on the link path; optional cache saves are skipped until
+// space becomes available again.
 struct QueuedBinarySave_t
 {
 	MD5Value_t	m_hash;
@@ -1132,8 +1134,10 @@ static void SaveCachedProgramBinary( GLuint program, const MD5Value_t &hash );
 static CUtlVector<QueuedBinarySave_t> s_queuedBinarySaves;
 static size_t s_nQueuedBinaryBytes = 0;
 
-// Flush cap in MB; 0 disables queuing entirely (write immediately).
-static ConVar gl_binary_save_queue_mb( "gl_binary_save_queue_mb", "2", FCVAR_NONE, "MB of program binaries to buffer before flushing shader-cache writes to disk (0 = write immediately)" );
+// Queue cap in MB; 0 disables queuing entirely (write immediately).  When the
+// cap is reached, the current optional binary save is dropped rather than
+// forcing synchronous SD-card I/O from the shader-link path.
+static ConVar gl_binary_save_queue_mb( "gl_binary_save_queue_mb", "2", FCVAR_NONE, "MB of program binaries to retain for deferred shader-cache writes (0 = write immediately; saves over the cap are skipped)" );
 
 static void WriteQueuedBinarySave( const QueuedBinarySave_t &save )
 {
@@ -1153,7 +1157,7 @@ static void WriteQueuedBinarySave( const QueuedBinarySave_t &save )
 // present path writes at most this many binaries and leaves the rest queued.
 static const int kMaxBinarySavesPerFlush = 8;
 
-void ToglFlushProgramBinarySaves( bool bFlushAll )
+static void FlushProgramBinarySavesInternal( bool bFlushAll )
 {
 	int nCount = s_queuedBinarySaves.Count();
 	if ( !nCount )
@@ -1171,11 +1175,21 @@ void ToglFlushProgramBinarySaves( bool bFlushAll )
 		free( s_queuedBinarySaves[i].m_pData );
 	}
 
-	for ( int i = 0; i < nBatch; ++i )
-	{
-		s_queuedBinarySaves.Remove( 0 );
-	}
+	s_queuedBinarySaves.RemoveMultipleFromHead( nBatch );
 	s_nQueuedBinaryBytes = ( nBytesFreed >= s_nQueuedBinaryBytes ) ? 0 : s_nQueuedBinaryBytes - nBytesFreed;
+}
+
+// Keep the original exported signature for already-built consumers.  The
+// explicit all-at-once operation has its own symbol so an old caller can never
+// accidentally pass an uninitialised boolean into the new implementation.
+void ToglFlushProgramBinarySaves( void )
+{
+	FlushProgramBinarySavesInternal( false );
+}
+
+void ToglFlushProgramBinarySavesAll( void )
+{
+	FlushProgramBinarySavesInternal( true );
 }
 
 static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
@@ -1183,8 +1197,8 @@ static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
 	if ( !gGL->glGetProgramBinary )
 		return;
 
-	const int nCapBytes = gl_binary_save_queue_mb.GetInt() * 1024 * 1024;
-	if ( nCapBytes <= 0 && s_queuedBinarySaves.Count() == 0 )
+	const int nCapMB = gl_binary_save_queue_mb.GetInt();
+	if ( nCapMB <= 0 )
 	{
 		// Queuing disabled: fall back to writing immediately.
 		SaveCachedProgramBinary( program, hash );
@@ -1202,6 +1216,14 @@ static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
 	if ( binLen <= 0 )
 		return;
 
+	// Use the reported length as an upper bound so a full queue avoids both
+	// allocation and the driver readback.  The post-readback check below still
+	// protects against a driver returning an unexpected byte count.
+	const size_t nCapBytes = (size_t)nCapMB * 1024u * 1024u;
+	if ( s_nQueuedBinaryBytes >= nCapBytes ||
+		(size_t)binLen > ( nCapBytes - s_nQueuedBinaryBytes ) )
+		return;
+
 	save.m_pData = malloc( binLen );
 	if ( !save.m_pData )
 		return;
@@ -1213,13 +1235,19 @@ static void QueueCachedProgramBinary( GLuint program, const MD5Value_t &hash )
 		return;
 	}
 
+	// Keep the deferred-save memory bounded without doing any file I/O while
+	// SetProgramPair is still on the render/link path.  Program-binary caching is
+	// best-effort, so a save that does not fit is skipped instead of stalling the
+	// current frame; later links can be cached after the queue drains.
+	if ( s_nQueuedBinaryBytes > nCapBytes ||
+		(size_t)save.m_nBytes > ( nCapBytes - s_nQueuedBinaryBytes ) )
+	{
+		free( save.m_pData );
+		return;
+	}
+
 	s_queuedBinarySaves.AddToTail( save );
 	s_nQueuedBinaryBytes += (size_t)save.m_nBytes;
-
-	if ( nCapBytes > 0 && s_nQueuedBinaryBytes >= (size_t)nCapBytes )
-	{
-		ToglFlushProgramBinarySaves();
-	}
 }
 
 static void ComputeShaderPairHash( CGLMProgram *vp, CGLMProgram *fp, uint extraKeyBits, MD5Value_t &outHash )
